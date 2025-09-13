@@ -1,5 +1,9 @@
 [workspace]
-resolver = "3"
+resolver = "2"
 members = [
-    "packages/chabi-core", "packages/chabi-server",
+    "packages/chabi-core",
+    "packages/chabi-server",
+    "packages/chabi-redis-handler",
+    "packages/chabi-http-handler",
+    "apps/chabi-tester"
 ]

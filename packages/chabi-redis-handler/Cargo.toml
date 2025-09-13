@@ -1,8 +1,8 @@
 [package]
-name = "chabi-core"
+name = "chabi-redis-handler"
 version = "0.1.0"
 edition = "2021"
-description = "Core functionality for Chabi - A Redis Alternative"
+description = "Redis protocol handler for Chabi"
 
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
@@ -10,7 +10,5 @@ tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1.0"
 thiserror = "1.0"
 tracing = "0.1"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-async-trait = "0.1"
+chabi-core = { path = "../chabi-core" }
 futures = "0.3"

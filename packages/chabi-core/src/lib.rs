@@ -1,15 +1,9 @@
-//! Chabi-core - A Redis-compatible key-value store library
-//!
-//! This library provides the core functionality for the Chabi key-value store,
-//! including data storage, persistence, and command handling.
+use std::error::Error;
 
-pub mod types;
-pub mod persistence;
-pub mod protocol;
 pub mod commands;
-mod kv;
+pub mod resp;
 
-// Re-export main types
-pub use types::{Value, SerializedValue};
-pub use persistence::{PersistenceManager, PersistenceOptions, Store, new_store};
-pub use kv::ChabiKV;
+pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
+
+// Re-export tokio's RwLock to be used consistently across the codebase
+pub use tokio::sync::RwLock;
