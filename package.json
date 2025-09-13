@@ -1,9 +1,4 @@
 {
   "name": "chabi",
-  "version": "1.0.0",
-  "description": "",
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "packageManager": "pnpm@10.14.0"
 }

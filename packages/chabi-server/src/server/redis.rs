@@ -30,12 +30,6 @@ impl RedisServer {
         let hash_store: Arc<RwLock<HashMap<String, HashMap<String, String>>>> = Arc::new(RwLock::new(HashMap::new()));
         let expirations: Arc<RwLock<HashMap<String, Instant>>> = Arc::new(RwLock::new(HashMap::new()));
 
-        // Remove separate sync stores; use the async ones everywhere
-        // let sync_string_store: Arc<StdRwLock<HashMap<String, String>>> = Arc::new(StdRwLock::new(HashMap::new()));
-        // let sync_list_store: Arc<StdRwLock<HashMap<String, Vec<String>>>> = Arc::new(StdRwLock::new(HashMap::new()));
-        // let sync_set_store: Arc<StdRwLock<HashMap<String, Vec<String>>>> = Arc::new(StdRwLock::new(HashMap::new()));
-        // let sync_hash_store: Arc<StdRwLock<HashMap<String, HashMap<String, String>>>> = Arc::new(StdRwLock::new(HashMap::new()));
-
         // channel -> Vec<(conn_id, Sender<(channel, message)>)>
         let pubsub_channels: Arc<std::sync::RwLock<HashMap<String, Vec<(usize, mpsc::Sender<(String, String)>)>>>> = Arc::new(std::sync::RwLock::new(HashMap::new()));
 
