@@ -1,6 +1,6 @@
 # Chabi - Alternative to Redis / DiceDB
 
-Chabi is a Rust-based reimplementation of core Redis functionality with a focus on correctness, async safety, and approachable code. It ships with a Redis-compatible TCP server, a small HTTP API, an integration tester, and a simple benchmark tool.
+Chabi is a Rust-based reimplementation of core Redis functionality with a focus on correctness, async safety, and approachable code. It ships with a Redis-compatible TCP server, a small HTTP API, an integration tester.
 
 Status: early development, but end-to-end Redis/HTTP tests currently pass.
 
@@ -52,6 +52,9 @@ The server reads ports from environment variables (with defaults):
 - HTTP_PORT (default 8080)
 
 ## Benchmarks (illustrative)
+
+We use [membench](https://github.com/DiceDB/membench) developed by DiceDB Team for benchmarking Chabi.
+
 On a Hetzner CCX23 machine (4 vCPU, 16GB RAM):
 
 DiceDB (for reference)
