@@ -57,11 +57,13 @@ We use [membench](https://github.com/DiceDB/membench) developed by DiceDB Team f
 
 On a Hetzner CCX23 machine (4 vCPU, 16GB RAM):
 
-DiceDB (for reference)
-- 4 clients: Throughput ~15655 ops/sec; GET p50 ~0.227 ms, p90 ~0.338 ms; SET p50 ~0.230 ms, p90 ~0.340 ms
-
-Chabi
-- 4 clients: Throughput ~35633 ops/sec; GET p50 ~0.071 ms, p90 ~0.109 ms; SET p50 ~0.073 ms, p90 ~0.111 ms
+| Metric               | DiceDB   | Redis    | Chabi    |
+| -------------------- | -------- | -------- | -------- |
+| Throughput (ops/sec) | 15655    | 12267    | 35633    |
+| GET p50 (ms)         | 0.227327 | 0.270335 | 0.071167 |
+| GET p90 (ms)         | 0.337919 | 0.329727 | 0.108543 |
+| SET p50 (ms)         | 0.230399 | 0.272383 | 0.072703 |
+| SET p90 (ms)         | 0.339967 | 0.331775 | 0.111103 |
 
 Run the scheduled/dispatchable benchmark in CI under the Benchmarks workflow or locally via make bench.
 

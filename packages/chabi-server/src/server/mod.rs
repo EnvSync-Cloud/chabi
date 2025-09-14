@@ -18,13 +18,15 @@ pub async fn run_server(
 
     let redis_server = Arc::new(RedisServer::new());
 
-    if let Some(ref path) = snapshot_path {
+    if let Some(ref dir) = snapshot_path {
+        // Initialize directory config
+        redis_server.set_snapshot_dir(dir.clone()).await;
         // Load existing snapshot before starting background snapshotting
-        if let Err(e) = redis_server.load_snapshot_from_path(path).await {
-            tracing::error!("Failed to load snapshot from {}: {}", path, e);
+        if let Err(e) = redis_server.load_snapshot_from_dir(dir).await {
+            tracing::error!("Failed to load snapshot from {}: {}", dir, e);
         }
         let interval = Duration::from_secs(snapshot_interval_secs);
-        redis_server.start_snapshot_task(path.clone(), interval);
+        redis_server.start_snapshot_task(dir.clone(), interval);
     }
 
     let http_server = HttpServer::new(Arc::clone(&redis_server));

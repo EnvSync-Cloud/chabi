@@ -1,4 +1,6 @@
 use std::env;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 mod server;
 
@@ -32,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(60);
 
-    // Parse simple CLI flags: --snapshot-path <path>, --snapshot-interval-secs <u64>
+    // Parse simple CLI flags: --snapshot-path <dir>, --snapshot-interval-secs <u64>
     let mut args = std::env::args().peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -52,14 +54,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    if let Some(ref path) = snapshot_path {
+    // If no directory provided, create an OS-specific temp directory: chabi-${timestamp}
+    if snapshot_path.is_none() {
+        let tmp_dir_root = std::env::temp_dir();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let dir: PathBuf = tmp_dir_root.join(format!("chabi-{}", ts));
+        // Ensure directory exists
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            tracing::error!(
+                "Failed to create temp snapshot directory {}: {}",
+                dir.display(),
+                e
+            );
+        } else {
+            snapshot_path = Some(dir.to_string_lossy().to_string());
+        }
+    }
+
+    if let Some(ref dir) = snapshot_path {
         tracing::info!(
-            "Snapshotting enabled: path={}, interval={}s",
-            path,
+            "Snapshotting enabled: dir={}, interval={}s",
+            dir,
             snapshot_interval_secs
         );
     } else {
-        tracing::info!("Snapshotting disabled (no path configured)");
+        tracing::info!("Snapshotting disabled (no directory configured)");
     }
 
     tracing::info!(
