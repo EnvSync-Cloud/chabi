@@ -347,31 +347,34 @@ impl RedisServer {
                             #[cfg(target_family = "windows")]
                             let _ = tokio::fs::remove_file(&path).await;
 
-                            if let Err(e) = tokio::fs::rename(&tmp_path, &path).await {
-                                // Fallback: copy then remove tmp (best-effort on non-atomic platforms)
-                                match tokio::fs::copy(&tmp_path, &path).await {
-                                    Ok(_) => {
-                                        let _ = tokio::fs::remove_file(&tmp_path).await;
-                                        tracing::debug!(
-                                            "snapshot saved to {} ({} bytes) [fallback copy]",
-                                            path,
-                                            bytes.len()
-                                        );
-                                    }
-                                    Err(copy_err) => {
-                                        tracing::error!(
-                                            "snapshot rename/copy error: {} (rename_err: {})",
-                                            copy_err,
-                                            e
-                                        );
+                            match tokio::fs::rename(&tmp_path, &path).await {
+                                Ok(_) => {
+                                    tracing::debug!(
+                                        "snapshot saved to {} ({} bytes)",
+                                        path,
+                                        bytes.len()
+                                    );
+                                }
+                                Err(e) => {
+                                    // Fallback: copy then remove tmp (best-effort on non-atomic platforms)
+                                    match tokio::fs::copy(&tmp_path, &path).await {
+                                        Ok(_) => {
+                                            let _ = tokio::fs::remove_file(&tmp_path).await;
+                                            tracing::debug!(
+                                                "snapshot saved to {} ({} bytes) [fallback copy]",
+                                                path,
+                                                bytes.len()
+                                            );
+                                        }
+                                        Err(copy_err) => {
+                                            tracing::error!(
+                                                "snapshot rename/copy error: {} (rename_err: {})",
+                                                copy_err,
+                                                e
+                                            );
+                                        }
                                     }
                                 }
-                            } else {
-                                tracing::debug!(
-                                    "snapshot saved to {} ({} bytes)",
-                                    path,
-                                    bytes.len()
-                                );
                             }
                         }
                     }
