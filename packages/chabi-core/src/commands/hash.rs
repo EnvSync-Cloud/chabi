@@ -160,7 +160,7 @@ impl CommandHandler for HExistsCommand {
         let store = self.store.read().await;
 
         Ok(RespValue::Integer(
-            if store.get(&key).map_or(false, |hash| hash.contains_key(&field)) {
+            if store.get(&key).is_some_and(|hash| hash.contains_key(&field)) {
                 1
             } else {
                 0

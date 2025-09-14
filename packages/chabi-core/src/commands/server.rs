@@ -49,27 +49,10 @@ impl CommandHandler for InfoCommand {
 }
 
 #[derive(Clone)]
-pub struct SaveCommand {
-    string_store: Arc<RwLock<HashMap<String, String>>>,
-    hash_store: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
-    list_store: Arc<RwLock<HashMap<String, Vec<String>>>>,
-    set_store: Arc<RwLock<HashMap<String, HashSet<String>>>>,
-}
+pub struct SaveCommand;
 
 impl SaveCommand {
-    pub fn new(
-        string_store: Arc<RwLock<HashMap<String, String>>>,
-        hash_store: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
-        list_store: Arc<RwLock<HashMap<String, Vec<String>>>>,
-        set_store: Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    ) -> Self {
-        SaveCommand {
-            string_store,
-            hash_store,
-            list_store,
-            set_store,
-        }
-    }
+    pub fn new() -> Self { Self }
 }
 
 #[async_trait]

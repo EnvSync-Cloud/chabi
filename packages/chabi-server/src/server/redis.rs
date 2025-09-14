@@ -84,12 +84,7 @@ impl RedisServer {
             Arc::clone(&list_store),
             Arc::clone(&set_store),
         )) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("SAVE".to_string(), Box::new(chabi_core::commands::server::SaveCommand::new(
-            Arc::clone(&string_store),
-            Arc::clone(&hash_store),
-            Arc::clone(&list_store),
-            Arc::clone(&set_store),
-        )) as Box<dyn CommandHandler + Send + Sync>);
+    command_registry.insert("SAVE".to_string(), Box::new(chabi_core::commands::server::SaveCommand::new()) as Box<dyn CommandHandler + Send + Sync>);
 
         // Documentation commands
         command_registry.insert("DOCS".to_string(), Box::new(chabi_core::commands::docs::DocsCommand::new()) as Box<dyn CommandHandler + Send + Sync>);
@@ -97,8 +92,8 @@ impl RedisServer {
 
         // Register pubsub commands (Publish and PubSub; Subscribe/Unsubscribe will be handled at connection level)
         command_registry.insert("PUBLISH".to_string(), Box::new(chabi_core::commands::pubsub::PublishCommand::new(Arc::clone(&pubsub_channels))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("SUBSCRIBE".to_string(), Box::new(chabi_core::commands::pubsub::SubscribeCommand::new(Arc::clone(&pubsub_channels))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("UNSUBSCRIBE".to_string(), Box::new(chabi_core::commands::pubsub::UnsubscribeCommand::new(Arc::clone(&pubsub_channels))) as Box<dyn CommandHandler + Send + Sync>);
+    command_registry.insert("SUBSCRIBE".to_string(), Box::new(chabi_core::commands::pubsub::SubscribeCommand::new()) as Box<dyn CommandHandler + Send + Sync>);
+    command_registry.insert("UNSUBSCRIBE".to_string(), Box::new(chabi_core::commands::pubsub::UnsubscribeCommand::new()) as Box<dyn CommandHandler + Send + Sync>);
         command_registry.insert("PUBSUB".to_string(), Box::new(chabi_core::commands::pubsub::PubSubCommand::new(Arc::clone(&pubsub_channels))) as Box<dyn CommandHandler + Send + Sync>);
 
         RedisServer {

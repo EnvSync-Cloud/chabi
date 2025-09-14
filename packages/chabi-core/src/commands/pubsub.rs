@@ -41,7 +41,7 @@ impl CommandHandler for PublishCommand {
         let senders = {
             let channels = self.channels.read().unwrap();
             channels.get(&channel)
-                .map(|s| s.clone())
+                .cloned()
                 .unwrap_or_default()
         };
 
@@ -79,15 +79,10 @@ impl CommandHandler for PublishCommand {
 }
 
 #[derive(Clone)]
-pub struct SubscribeCommand {
-    // Kept for compatibility; server handles subscription lifecycle
-    channels: Arc<RwLock<ChannelMap>>,
-}
+pub struct SubscribeCommand;
 
 impl SubscribeCommand {
-    pub fn new(channels: Arc<RwLock<ChannelMap>>) -> Self {
-        SubscribeCommand { channels }
-    }
+    pub fn new() -> Self { Self }
 }
 
 #[async_trait]
@@ -118,15 +113,10 @@ impl CommandHandler for SubscribeCommand {
 }
 
 #[derive(Clone)]
-pub struct UnsubscribeCommand {
-    // Kept for compatibility; server handles unsubscription lifecycle
-    channels: Arc<RwLock<ChannelMap>>,
-}
+pub struct UnsubscribeCommand;
 
 impl UnsubscribeCommand {
-    pub fn new(channels: Arc<RwLock<ChannelMap>>) -> Self {
-        UnsubscribeCommand { channels }
-    }
+    pub fn new() -> Self { Self }
 }
 
 #[async_trait]
