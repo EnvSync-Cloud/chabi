@@ -37,10 +37,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--snapshot-path" => {
-                if let Some(val) = args.next() { snapshot_path = Some(val); }
+                if let Some(val) = args.next() {
+                    snapshot_path = Some(val);
+                }
             }
             "--snapshot-interval-secs" => {
-                if let Some(val) = args.next() { if let Ok(v) = val.parse::<u64>() { snapshot_interval_secs = v; } }
+                if let Some(val) = args.next() {
+                    if let Ok(v) = val.parse::<u64>() {
+                        snapshot_interval_secs = v;
+                    }
+                }
             }
             _ => {}
         }
@@ -49,12 +55,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(ref path) = snapshot_path {
         tracing::info!(
             "Snapshotting enabled: path={}, interval={}s",
-            path, snapshot_interval_secs
+            path,
+            snapshot_interval_secs
         );
     } else {
         tracing::info!("Snapshotting disabled (no path configured)");
     }
 
-    tracing::info!("Starting server with Redis port {} and HTTP port {}", redis_port, http_port);
+    tracing::info!(
+        "Starting server with Redis port {} and HTTP port {}",
+        redis_port,
+        http_port
+    );
     server::run_server(redis_port, http_port, snapshot_path, snapshot_interval_secs).await
 }

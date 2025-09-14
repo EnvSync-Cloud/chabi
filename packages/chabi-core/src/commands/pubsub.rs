@@ -90,7 +90,9 @@ pub struct SubscribeCommand {
 
 impl SubscribeCommand {
     pub fn new(channels: Arc<RwLock<ChannelMap>>) -> Self {
-        SubscribeCommand { _channels: channels }
+        SubscribeCommand {
+            _channels: channels,
+        }
     }
 }
 
@@ -131,7 +133,9 @@ pub struct UnsubscribeCommand {
 
 impl UnsubscribeCommand {
     pub fn new(channels: Arc<RwLock<ChannelMap>>) -> Self {
-        UnsubscribeCommand { _channels: channels }
+        UnsubscribeCommand {
+            _channels: channels,
+        }
     }
 }
 

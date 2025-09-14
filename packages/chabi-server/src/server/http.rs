@@ -89,6 +89,8 @@ impl HttpServer {
 
 impl Clone for HttpServer {
     fn clone(&self) -> Self {
-        HttpServer { redis: Arc::clone(&self.redis) }
+        HttpServer {
+            redis: Arc::clone(&self.redis),
+        }
     }
 }

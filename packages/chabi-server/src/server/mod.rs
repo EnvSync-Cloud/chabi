@@ -31,7 +31,8 @@ pub async fn run_server(
 
     tracing::info!(
         "Starting Redis server on port {} and HTTP server on port {}",
-        redis_port, http_port
+        redis_port,
+        http_port
     );
 
     let redis_handle = {

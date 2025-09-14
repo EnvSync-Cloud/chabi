@@ -1,9 +1,9 @@
 use chabi_core::commands::CommandHandler;
-use chabi_core::resp::{RespValue, RespParser};
+use chabi_core::resp::{RespParser, RespValue};
 use chabi_core::Result;
 use chabi_core::RwLock;
-use futures::{StreamExt, SinkExt};
-use serde::{Serialize, Deserialize};
+use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -324,7 +324,9 @@ impl RedisServer {
                             .checked_add(delta)
                             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                             .map(|d| d.as_secs())
-                            .unwrap_or_else(|| UNIX_EPOCH.elapsed().map(|d| d.as_secs()).unwrap_or(0));
+                            .unwrap_or_else(|| {
+                                UNIX_EPOCH.elapsed().map(|d| d.as_secs()).unwrap_or(0)
+                            });
                         exps.insert(k.clone(), ts);
                     }
                     Snapshot {
@@ -461,7 +463,12 @@ impl RedisServer {
 
         tracing::info!(
             "loaded snapshot from {} (strings={}, lists={}, sets={}, hashes={}, expirations={})",
-            path, strings_len, lists_len, sets_len, hashes_len, expirations_len
+            path,
+            strings_len,
+            lists_len,
+            sets_len,
+            hashes_len,
+            expirations_len
         );
 
         Ok(())
