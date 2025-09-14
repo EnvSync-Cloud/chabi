@@ -1,0 +1,229 @@
+# RFC: WATCH Command for Chabi
+
+## Overview
+WATCH is a blocking command that allows clients to subscribe to change events for a specific key or a subset of a complex data structure (e.g., a field within a hash). While the watch is active, the server streams events to the client as the watched data changes. The client can keep the connection open to receive updates in real time.
+
+Primary use cases include:
+- Building reactive features (live dashboards, tails of config changes, cache invalidation hooks).
+- Debugging and observability of data mutations in development environments.
+
+This RFC defines the user-facing command, event format, semantics, and an implementation sketch aligned with Chabi’s architecture.
+
+## Command Syntax (MVP)
+- WATCH KEY <key>
+- WATCH HASH <hash>
+- WATCH HASH <hash>.<field>
+- WATCH LIST <list>
+- WATCH SET <set>
+- WATCH SET <set>.<member>
+
+Notes:
+- The command is blocking; after the initial acknowledgment, the server streams events until the client closes the connection or the server terminates the watch (e.g., on timeout in future extensions).
+- Watching a non-existent key/hash/list/set/field/member is allowed; the watch remains active and the client will receive events if/when the value is created.
+
+## Examples
+
+Scenario: key datatype
+
+> SET k value
+1
+> GET k
+"value"
+
+We monitor the change on KEY 'k'
+> WATCH KEY k
+(WAITING FOR UPDATES ...)
+
+> SET k newValue
+1
+
+We got an update while WATCH is active
+> WATCH KEY k
+(WAITING FOR UPDATES ...)
+newValue [${CURRENT_TIMESTAMP}]
+
+------
+
+Scenario: hash datatype
+
+> HSET users u1 hello
+1
+> HGET users u1
+"hello"
+
+Watch a single field
+> WATCH HASH users.u1
+(WAITING FOR UPDATES ...)
+
+Watch the entire hash map (all fields)
+> WATCH HASH users
+(WAITING FOR UPDATES ...)
+
+> HSET users u1 world
+1
+
+We got updates on active watch commands
+> WATCH HASH users.u1
+(WAITING FOR UPDATES ...)
+world [${CURRENT_TIMESTAMP}]
+
+> WATCH HASH users
+(WAITING FOR UPDATES ...)
+u1:world [${CURRENT_TIMESTAMP}]
+
+------
+
+Scenario: set datatype
+
+> SADD colors red
+1
+> SMEMBERS colors
+1) "red"
+
+Watch the entire set
+> WATCH SET colors
+(WAITING FOR UPDATES ...)
+
+Add and remove members
+> SADD colors blue
+1
+> SREM colors red
+1
+
+While watch is active
+> WATCH SET colors
+(WAITING FOR UPDATES ...)
+added:red [${CURRENT_TIMESTAMP}]
+added:blue [${CURRENT_TIMESTAMP}]
+removed:red [${CURRENT_TIMESTAMP}]
+
+Watch a specific member presence
+> WATCH SET colors.red
+(WAITING FOR UPDATES ...)
+> SADD colors red
+1
+present [${CURRENT_TIMESTAMP}]
+> SREM colors red
+1
+absent [${CURRENT_TIMESTAMP}]
+
+------
+
+Scenario: list datatype
+
+> LPUSH tasks t1
+1
+> RPUSH tasks t2
+2
+> LRANGE tasks 0 -1
+1) "t1"
+2) "t2"
+
+Watch the list for pushes/pops
+> WATCH LIST tasks
+(WAITING FOR UPDATES ...)
+
+Mutate the list
+> LPUSH tasks t0
+3
+> RPOP tasks
+"t2"
+
+While watch is active
+> WATCH LIST tasks
+(WAITING FOR UPDATES ...)
+lpush:t0 len=3 [${CURRENT_TIMESTAMP}]
+rpop:t2 len=2 [${CURRENT_TIMESTAMP}]
+
+------
+
+## Event Model
+Each change to the watched target generates an event. In the MVP, events are delivered as human-readable lines for CLI users and as RESP arrays for protocol clients.
+
+- Text form (CLI):
+  - KEY scope: <value> [<timestamp_ms>]
+  - HASH field scope: <field_value> [<timestamp_ms>]
+  - HASH map scope: <field>:<field_value> [<timestamp_ms>]
+  - SET scope (whole set): added:<member> [<timestamp_ms>] or removed:<member> [<timestamp_ms>]
+  - SET member scope: present [<timestamp_ms>] or absent [<timestamp_ms>]
+  - LIST scope: <op>:<value> len=<new_len> [<timestamp_ms>] where <op> ∈ {lpush, rpush, lpop, rpop}
+
+- RESP form (protocol):
+  [
+    "event",                 // literal
+    <event_type>,             // e.g., "set", "del", "expire", "hset", "hdel", "sadd", "srem", "lpush", "rpush", "lpop", "rpop"
+    <scope>,                  // "KEY" | "HASH" | "SET" | "LIST"
+    <key>,                    // key/hash/set/list name
+    <subkey_or_empty>,        // field for HASH, member for SET-member watch, "L"|"R" for LIST side on push/pop, or "" if not applicable
+    <value_or_empty>,         // value after mutation (or popped value), or member added/removed (for SET), or "" if deleted/absent
+    <timestamp_ms>,           // integer milliseconds since UNIX_EPOCH
+    <extra_or_empty>          // optional: e.g., new_len for LIST mutations (as stringified integer) or ""
+  ]
+
+Event types (MVP):
+- KEY scope: set, del, expire.
+- HASH scope: hset, hdel.
+- SET scope: sadd, srem.
+- LIST scope: lpush, rpush, lpop, rpop.
+
+Notes:
+- For delete/expire events where there is no value, value_or_empty is "" in RESP and omitted (or shown as empty) in text form.
+- For LIST events, extra_or_empty SHOULD carry the new length; for other scopes, it SHOULD be "".
+- Timestamps are server-generated as milliseconds since UNIX_EPOCH.
+
+## Semantics
+- Ordering: Events for a given key (or hash/field, set, list) are emitted in the order mutations are applied.
+- Delivery guarantees: Best-effort real-time delivery over a single TCP connection. If the client does not read fast enough and the server’s internal buffers fill, the server may drop the connection.
+- Scope matching:
+  - WATCH KEY <k>: emits mutations that affect the value at key "k" (set, del, expire).
+  - WATCH HASH <h>.<f>: emits mutations that affect a specific field "f" in hash "h" (hset/hdel).
+  - WATCH HASH <h>: emits mutations of any field in hash "h". Event includes the field name.
+  - WATCH SET <s>: emits sadd/srem for any member in set "s"; value is the member.
+  - WATCH SET <s>.<m>: emits presence updates for member "m" in set "s" as present/absent transitions.
+  - WATCH LIST <l>: emits push/pop mutations (lpush, rpush, lpop, rpop) for list "l"; value is the pushed/popped element, extra_or_empty carries new length.
+- Existence: Watching non-existent targets is allowed; events are produced if/when they are created.
+- Blocking nature: The connection is dedicated to the watch stream while active. Other commands on the same connection are not processed until the watch ends (disconnect).
+
+## Errors
+- Wrong arity/syntax: Return a protocol error (e.g., ERR wrong number of arguments).
+- Unsupported scope: Return ERR unsupported scope.
+
+## Implementation Sketch
+- Registration: Maintain per-scope registries using the existing pub/sub channels map (e.g., key→subscribers, hash→subscribers, set→subscribers, set.member→subscribers, list→subscribers). Each subscriber holds a Sender for outbound events.
+- Emission points: On every mutation path, publish to the relevant channels:
+  - KEY k: set/del/expire → watchers of KEY k
+  - HASH h.f: hset/hdel → watchers of HASH h.f and watchers of HASH h
+  - SET s: sadd/srem → watchers of SET s; also if watching SET s.m, emit present/absent when membership flips
+  - LIST l: lpush/rpush/lpop/rpop → watchers of LIST l (include side and new length)
+- Timestamp: Use SystemTime::now().duration_since(UNIX_EPOCH).as_millis() for event timestamps.
+- Backpressure: Use bounded channels; if send fails due to a closed or overwhelmed receiver, remove the subscriber.
+- Threading: The WATCH handler spawns a task that forwards channel messages to the client connection until closed.
+
+## Performance Considerations
+- O(1) overhead per mutation per attached watcher.
+- Memory overhead proportional to the number of active watchers.
+- To avoid head-of-line blocking, use per-watcher buffers (bounded mpsc channels) and clean up on send failures.
+
+## Backward/Forward Compatibility
+- New command; no impact on existing commands.
+- Future extensions can be added without breaking MVP behavior.
+
+## Future Extensions (Non-goals for MVP)
+- Patterns: WATCH KEYPATTERN <glob> (subscribe to a set of keys via glob/prefix).
+- Additional data types: LIST index/segment watchers (e.g., <list>.<index> or slices), ZSET support, STREAMS.
+- Filters: --events=… to select a subset of events; --initial to send the current value snapshot.
+- Timeouts: WATCH … TIMEOUT <ms> to auto-terminate after inactivity or fixed period.
+- Batching: Periodic coalescing of rapid consecutive updates.
+- Acks/replay: Sequencing and limited replay on reconnect.
+
+## Testing Plan
+- Unit tests: Ensure event emission on all mutation paths for keys, hashes, sets, and lists; verify ordering per scope.
+- Integration tests:
+  - WATCH KEY on non-existent key, then SET → receives set event.
+  - WATCH HASH <h>.<f>, HSET multiple times → receives ordered updates.
+  - WATCH HASH <h>, HSET/HDEL different fields → receives field-tagged events.
+  - WATCH SET <s>, SADD/SREM various members → receives add/remove events.
+  - WATCH SET <s>.<m>, SADD/SREM <m> → receives present/absent transitions.
+  - WATCH LIST <l>, LPUSH/RPUSH/LPOP/RPOP → receives correct operations with new length.
+  - Expiration path: set TTL then observe expire event (when supported by the scheduler).
+- Load tests: Many watchers on the same targets and many concurrent mutations to validate stability and cleanup on slow consumers.

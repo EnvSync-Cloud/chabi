@@ -1,0 +1,192 @@
+# RFC: WATCH.SIZE Command for Chabi
+
+## Overview
+WATCH.SIZE is a blocking command that allows clients to subscribe to changes in the size/cardinality of container data types. While the watch is active, the server streams size-change events to the client whenever the number of elements changes.
+
+Supported key types (MVP):
+- HASH (field count; HLEN)
+- SET (member count; SCARD)
+- LIST (length; LLEN)
+
+Primary use cases include:
+- Lightweight change detection for reactive UIs and metrics (avoid streaming full mutation events).
+- Alerting when queues grow/shrink, or when hashes/sets cross thresholds.
+
+This RFC defines the user-facing command, event format, semantics, examples, and an implementation sketch.
+
+## Command Syntax (MVP)
+- WATCH.SIZE HASH <hash>
+- WATCH.SIZE SET <set>
+- WATCH.SIZE LIST <list>
+
+Notes:
+- The command is blocking; after the initial acknowledgment, the server streams size-change events until the client closes the connection or the server terminates the watch.
+- Watching a non-existent key is allowed; the watch remains active and the client will receive events if/when the value is created.
+- Servers MAY add optional modifiers in the future (e.g., WITH_INITIAL) without breaking the base wire format.
+
+## Examples
+
+Scenario: HASH size
+
+> HSET users u1 alice
+1
+> HLEN users
+1
+
+Watch the hash field count
+> WATCH.SIZE HASH users
+(WAITING FOR UPDATES ...)
+
+> HSET users age 42
+1
+
+While watch is active
+> WATCH.SIZE HASH users
+(WAITING FOR UPDATES ...)
+size=2 delta=+1 cause=hset [${CURRENT_TIMESTAMP}]
+
+> HDEL users u1
+1
+size=1 delta=-1 cause=hdel [${CURRENT_TIMESTAMP}]
+
+> DEL users
+1
+size=0 delta=-1 cause=del deleted [${CURRENT_TIMESTAMP}]
+
+------
+
+Scenario: SET size
+
+> SADD colors red
+1
+> SCARD colors
+1
+
+Watch the set member count
+> WATCH.SIZE SET colors
+(WAITING FOR UPDATES ...)
+
+> SADD colors blue green
+2
+size=3 delta=+2 cause=sadd [${CURRENT_TIMESTAMP}]
+
+> SREM colors blue
+1
+size=2 delta=-1 cause=srem [${CURRENT_TIMESTAMP}]
+
+> DEL colors
+1
+size=0 delta=-1 cause=del deleted [${CURRENT_TIMESTAMP}]
+
+------
+
+Scenario: LIST size
+
+> RPUSH tasks t1 t2
+2
+> LLEN tasks
+2
+
+Watch the list length
+> WATCH.SIZE LIST tasks
+(WAITING FOR UPDATES ...)
+
+> LPUSH tasks t0
+3
+size=3 delta=+1 cause=lpush [${CURRENT_TIMESTAMP}]
+
+> RPOP tasks
+"t2"
+size=2 delta=-1 cause=rpop [${CURRENT_TIMESTAMP}]
+
+> LTRIM tasks 0 0
+OK
+size=1 delta=-1 cause=ltrim [${CURRENT_TIMESTAMP}]
+
+> DEL tasks
+1
+size=0 delta=-1 cause=del deleted [${CURRENT_TIMESTAMP}]
+
+------
+
+## Event Model
+Each change to the watched container’s cardinality generates an event. In the MVP, events are delivered as human-readable lines for CLI users and as RESP arrays for protocol clients.
+
+- Text form (CLI):
+  - size=<new_size> [<timestamp_ms>]
+  - Optional fields may be included for observability: delta=<net_change>, cause=<op>, and a trailing token "deleted" when the key was removed/expired and size became 0.
+
+- RESP form (protocol):
+  [
+    "watch.size",          // literal channel name
+    <keytype>,             // "hash" | "set" | "list"
+    <key>,                 // key name
+    <new_size>,            // integer
+    <delta_or_empty>,      // integer or empty string ""
+    <cause_or_empty>,      // operation mnemonic or ""
+    <flags>                // "deleted" or "" (comma-separated list reserved for future)
+  ]
+
+Event emissions (rules):
+- Only emit when the size actually changes (no-op mutations are suppressed):
+  - Examples: HSET updating an existing field value (same field), SADD of an already-present member, LSET, etc.
+- Multi-element commands emit a single event with delta equal to the net change (e.g., RPUSH a b c → delta=+3).
+- Expiration/Deletion:
+  - If a key expires or is deleted and the size becomes 0 as a consequence, emit new_size=0 with cause=expire|del and include the "deleted" flag.
+  - The subscription remains active after deletion (recreation will produce subsequent events).
+
+Representative cause mnemonics:
+- HASH: hset, hdel, hdelall, del, expire
+- SET: sadd, srem, sremrange, del, expire
+- LIST: lpush, rpush, lpop, rpop, ltrim, del, expire
+
+Timestamps are server-generated as milliseconds since UNIX_EPOCH.
+
+## Semantics
+- Scope:
+  - HASH: number of distinct fields (HLEN)
+  - SET: number of distinct members (SCARD)
+  - LIST: length (LLEN)
+- Ordering: Events for a given key are emitted in the order mutations are applied (per-key FIFO per shard).
+- Delivery guarantees: Best-effort real-time delivery over a single TCP connection. If the client does not read fast enough and buffers fill, the server may drop the connection.
+- Existence: Watching non-existent targets is allowed; events are produced if/when they are created.
+- Blocking nature: The connection is dedicated to the watch stream while active. Other commands on the same connection are not processed until the watch ends (disconnect).
+
+## Errors
+- Wrong arity/syntax: Return a protocol error (e.g., ERR wrong number of arguments).
+- Unsupported scope: Return ERR unsupported scope.
+- WRONGTYPE: If the key exists with a different type than requested at the time of subscription.
+
+## Implementation Sketch
+- Registration: Maintain per-scope registries using the existing watch/pubsub infrastructure (e.g., key→subscribers for size channel). Each subscriber holds a Sender for outbound events.
+- Emission points:
+  - HASH: hset/hmset/hdel/hdelall/clear/del/expire → compute net new fields count (before/after or metadata counter)
+  - SET: sadd/srem/sremrange/clear/del/expire → compute net member count
+  - LIST: lpush/rpush/lpop/rpop/ltrim/clear/del/expire → compute net length
+- Efficiency:
+  - Prefer metadata counters (hlen, scard, llen) maintained alongside the data structure to avoid scans.
+  - Coalesce within a single command execution into one event with net delta.
+- Optional WITH_INITIAL (future):
+  - Emit a synthetic event immediately after subscribing with cause="snapshot" and delta omitted, conveying the current size.
+- Timestamp: Use SystemTime::now().duration_since(UNIX_EPOCH).as_millis().
+- Backpressure: Use bounded channels; if send fails due to a closed/overwhelmed receiver, remove the subscriber.
+
+## Performance Considerations
+- O(1) overhead per mutation per attached watcher.
+- Memory overhead proportional to active watchers.
+- To avoid head-of-line blocking, use per-watcher buffers (bounded mpsc channels) and clean up on send failures.
+
+## Backward/Forward Compatibility
+- New command; independent of WATCH. Clients may subscribe to both WATCH and WATCH.SIZE for the same key.
+- Wire format keeps a fixed position for new_size for easy parsing; optional fields are confined to tail positions.
+
+## Future Extensions (Non-goals for MVP)
+- ZSET support (ZCARD semantics).
+- Pattern subscriptions (e.g., WATCH.SIZE LIST q:*) with caution about fan-out and ordering.
+- Threshold/range notifications (emit only when crossing configured thresholds).
+- Per-event suppression of cause/delta for bandwidth savings.
+
+## Testing Plan
+- Unit tests per data structure covering: no-op mutations, single/multi-element changes, trims, deletion, expiration.
+- Integration tests validating ordering and coexistence with WATCH subscriptions.
+- Fuzz tests generating random sequences and verifying size evolution invariants.
