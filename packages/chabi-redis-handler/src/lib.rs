@@ -1,16 +1,16 @@
 //! Redis protocol handler implementation
 
+use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tokio_util::codec::Framed;
-use futures::{SinkExt, StreamExt};
 use tracing::{debug, error};
 
-use chabi_core::resp::{RespParser, RespValue};
 use chabi_core::commands::CommandHandler;
+use chabi_core::resp::{RespParser, RespValue};
 
 /// Redis protocol handler that manages connections and command execution
 pub struct RedisHandler {
@@ -43,34 +43,35 @@ impl RedisHandler {
                 while let Some(Ok(message)) = framed.next().await {
                     match message {
                         RespValue::Array(Some(array)) => {
-                            if let Some(RespValue::BulkString(Some(cmd_bytes))) = array.get(0) {
+                            if let Some(RespValue::BulkString(Some(cmd_bytes))) = array.first() {
                                 if let Ok(cmd) = String::from_utf8(cmd_bytes.clone()) {
                                     let args = array[1..].to_vec();
                                     let registry_lock = registry.read().await;
 
                                     match registry_lock.get(&cmd.to_lowercase()) {
-                                        Some(handler) => {
-                                            match handler.execute(args).await {
-                                                Ok(response) => {
-                                                    if let Err(e) = framed.feed(response).await {
-                                                        error!("Failed to send response: {}", e);
-                                                        break;
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    if let Err(e) = framed
-                                                        .feed(RespValue::Error(format!("ERR {}", e)))
-                                                        .await
-                                                    {
-                                                        error!("Failed to send error response: {}", e);
-                                                        break;
-                                                    }
+                                        Some(handler) => match handler.execute(args).await {
+                                            Ok(response) => {
+                                                if let Err(e) = framed.feed(response).await {
+                                                    error!("Failed to send response: {}", e);
+                                                    break;
                                                 }
                                             }
-                                        }
+                                            Err(e) => {
+                                                if let Err(e) = framed
+                                                    .feed(RespValue::Error(format!("ERR {}", e)))
+                                                    .await
+                                                {
+                                                    error!("Failed to send error response: {}", e);
+                                                    break;
+                                                }
+                                            }
+                                        },
                                         None => {
                                             if let Err(e) = framed
-                                                .feed(RespValue::Error(format!("ERR unknown command '{}'", cmd)))
+                                                .feed(RespValue::Error(format!(
+                                                    "ERR unknown command '{}'",
+                                                    cmd
+                                                )))
                                                 .await
                                             {
                                                 error!("Failed to send error response: {}", e);
@@ -78,23 +79,13 @@ impl RedisHandler {
                                             }
                                         }
                                     }
-                                } else {
-                                    if let Err(e) = framed
-                                        .feed(RespValue::Error("ERR invalid command format".to_string()))
-                                        .await
-                                    {
-                                        error!("Failed to send error response: {}", e);
-                                        break;
-                                    }
                                 }
-                            } else {
-                                if let Err(e) = framed
-                                    .feed(RespValue::Error("ERR invalid command format".to_string()))
-                                    .await
-                                {
-                                    error!("Failed to send error response: {}", e);
-                                    break;
-                                }
+                            } else if let Err(e) = framed
+                                .feed(RespValue::Error("ERR invalid command format".to_string()))
+                                .await
+                            {
+                                error!("Failed to send error response: {}", e);
+                                break;
                             }
                         }
                         _ => {

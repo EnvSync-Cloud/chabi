@@ -1,18 +1,18 @@
 //! Command implementations for the Redis server.
 
-pub mod string;
+pub mod connection;
+pub mod docs;
 pub mod hash;
-pub mod list;
-pub mod set;
 pub mod key;
+pub mod list;
 pub mod pubsub;
 pub mod server;
-pub mod docs;
-pub mod connection;
+pub mod set;
+pub mod string;
 
-use async_trait::async_trait;
 use crate::resp::RespValue;
 use crate::Result;
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait CommandHandler: Send + Sync {

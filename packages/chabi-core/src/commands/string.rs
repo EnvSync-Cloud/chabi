@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-use crate::resp::RespValue;
-use std::sync::Arc;
-use crate::RwLock;
 use crate::commands::CommandHandler;
+use crate::resp::RespValue;
 use crate::Result;
+use crate::RwLock;
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct SetCommand {
@@ -21,7 +21,9 @@ impl SetCommand {
 impl CommandHandler for SetCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'set' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'set' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -56,7 +58,9 @@ impl GetCommand {
 impl CommandHandler for GetCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'get' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'get' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -88,7 +92,9 @@ impl DelCommand {
 impl CommandHandler for DelCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.is_empty() {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'del' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'del' command".to_string(),
+            ));
         }
 
         let mut store = self.store.write().await;
@@ -124,7 +130,9 @@ impl ExistsCommand {
 impl CommandHandler for ExistsCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.is_empty() {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'exists' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'exists' command".to_string(),
+            ));
         }
 
         let store = self.store.read().await;
@@ -160,7 +168,9 @@ impl AppendCommand {
 impl CommandHandler for AppendCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'append' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'append' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -204,7 +214,9 @@ impl StrlenCommand {
 impl CommandHandler for StrlenCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'strlen' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'strlen' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {

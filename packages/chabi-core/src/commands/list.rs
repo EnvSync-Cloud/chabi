@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-use crate::resp::RespValue;
-use std::sync::Arc;
-use crate::RwLock;
 use crate::commands::CommandHandler;
+use crate::resp::RespValue;
 use crate::Result;
+use crate::RwLock;
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct LPushCommand {
@@ -21,7 +21,9 @@ impl LPushCommand {
 impl CommandHandler for LPushCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() < 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'lpush' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'lpush' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -60,7 +62,9 @@ impl RPushCommand {
 impl CommandHandler for RPushCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() < 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'rpush' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'rpush' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -99,7 +103,9 @@ impl LPopCommand {
 impl CommandHandler for LPopCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'lpop' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'lpop' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -138,7 +144,9 @@ impl RPopCommand {
 impl CommandHandler for RPopCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'rpop' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'rpop' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -177,7 +185,9 @@ impl LRangeCommand {
 impl CommandHandler for LRangeCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 3 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'lrange' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'lrange' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -189,7 +199,9 @@ impl CommandHandler for LRangeCommand {
             RespValue::BulkString(Some(bytes)) => {
                 match String::from_utf8_lossy(bytes).parse::<i64>() {
                     Ok(n) => n,
-                    Err(_) => return Ok(RespValue::Error("ERR value is not an integer".to_string())),
+                    Err(_) => {
+                        return Ok(RespValue::Error("ERR value is not an integer".to_string()))
+                    }
                 }
             }
             _ => return Ok(RespValue::Error("ERR invalid start index".to_string())),
@@ -199,7 +211,9 @@ impl CommandHandler for LRangeCommand {
             RespValue::BulkString(Some(bytes)) => {
                 match String::from_utf8_lossy(bytes).parse::<i64>() {
                     Ok(n) => n,
-                    Err(_) => return Ok(RespValue::Error("ERR value is not an integer".to_string())),
+                    Err(_) => {
+                        return Ok(RespValue::Error("ERR value is not an integer".to_string()))
+                    }
                 }
             }
             _ => return Ok(RespValue::Error("ERR invalid stop index".to_string())),
@@ -213,8 +227,12 @@ impl CommandHandler for LRangeCommand {
                 let mut start_idx = if start < 0 { len + start } else { start };
                 let mut stop_idx = if stop < 0 { len + stop } else { stop };
 
-                if start_idx < 0 { start_idx = 0; }
-                if stop_idx >= len { stop_idx = len - 1; }
+                if start_idx < 0 {
+                    start_idx = 0;
+                }
+                if stop_idx >= len {
+                    stop_idx = len - 1;
+                }
                 if start_idx > stop_idx || start_idx >= len {
                     return Ok(RespValue::Array(Some(vec![])));
                 }
@@ -246,7 +264,9 @@ impl LLenCommand {
 impl CommandHandler for LLenCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'llen' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'llen' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {

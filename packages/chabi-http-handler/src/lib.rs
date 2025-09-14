@@ -1,15 +1,15 @@
 //! HTTP endpoint handler implementation
 
-use std::error::Error;
-use std::sync::Arc;
 use axum::{
     extract::{Path, State},
-    routing::{get, post, delete},
-    Router, Json,
-    response::IntoResponse,
     http::StatusCode,
+    response::IntoResponse,
+    routing::{delete, get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::error;
 
@@ -28,10 +28,7 @@ type SharedStore = Arc<RwLock<std::collections::HashMap<Vec<u8>, Vec<u8>>>>;
 
 impl HttpHandler {
     /// Create a new HTTP handler instance
-    pub fn new(
-        store: Arc<RwLock<std::collections::HashMap<Vec<u8>, Vec<u8>>>>,
-        port: u16,
-    ) -> Self {
+    pub fn new(store: Arc<RwLock<std::collections::HashMap<Vec<u8>, Vec<u8>>>>, port: u16) -> Self {
         Self { store, port }
     }
 
@@ -53,10 +50,7 @@ impl HttpHandler {
     }
 }
 
-async fn get_value(
-    Path(key): Path<String>,
-    State(store): State<SharedStore>,
-) -> impl IntoResponse {
+async fn get_value(Path(key): Path<String>, State(store): State<SharedStore>) -> impl IntoResponse {
     let store = store.read().await;
     match store.get(key.as_bytes()) {
         Some(value) => match String::from_utf8(value.clone()) {

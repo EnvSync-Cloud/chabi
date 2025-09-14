@@ -1,14 +1,19 @@
 //! Documentation commands implementation
 
-use std::collections::HashMap;
-use async_trait::async_trait;
+use crate::commands::CommandHandler;
 use crate::resp::RespValue;
 use crate::Result;
-use crate::commands::CommandHandler;
+use async_trait::async_trait;
+use std::collections::HashMap;
 
 /// Command to get documentation for Redis commands
 #[derive(Clone)]
-pub struct DocsCommand {
+pub struct DocsCommand {}
+
+impl Default for DocsCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DocsCommand {
@@ -48,7 +53,10 @@ impl CommandHandler for DocsCommand {
         // Set commands
         docs.insert("SADD", "Add one or more members to a set");
         docs.insert("SMEMBERS", "Get all the members in a set");
-        docs.insert("SISMEMBER", "Determine if a given value is a member of a set");
+        docs.insert(
+            "SISMEMBER",
+            "Determine if a given value is a member of a set",
+        );
         docs.insert("SCARD", "Get the number of members in a set");
         docs.insert("SREM", "Remove one or more members from a set");
 
@@ -61,8 +69,14 @@ impl CommandHandler for DocsCommand {
 
         // PubSub commands
         docs.insert("PUBLISH", "Post a message to a channel");
-        docs.insert("SUBSCRIBE", "Listen for messages published to the given channels");
-        docs.insert("UNSUBSCRIBE", "Stop listening for messages posted to the given channels");
+        docs.insert(
+            "SUBSCRIBE",
+            "Listen for messages published to the given channels",
+        );
+        docs.insert(
+            "UNSUBSCRIBE",
+            "Stop listening for messages posted to the given channels",
+        );
         docs.insert("PUBSUB", "Inspect the state of the Pub/Sub subsystem");
 
         // Server commands
@@ -85,12 +99,17 @@ impl CommandHandler for DocsCommand {
 
 /// Command to get Redis command details
 #[derive(Clone)]
-pub struct CommandCommand {
-}
+pub struct CommandCommand {}
 
 impl CommandCommand {
     pub fn new() -> Self {
         Self {}
+    }
+}
+
+impl Default for CommandCommand {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

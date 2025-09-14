@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          override: true
+
+      - name: Install netcat
+        run: sudo apt-get update && sudo apt-get install -y netcat
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace --verbose
+
+      - name: Run server in background
+        run: |
+          REDIS_PORT=6380 HTTP_PORT=8081 cargo run -p chabi-server &
+          echo $! > server.pid
+          for i in {1..50}; do nc -z 127.0.0.1 6380 && nc -z 127.0.0.1 8081 && break; sleep 0.2; done
+
+      - name: Run integration tests (tester)
+        run: cargo run -p chabi-tester -- --redis-port 6380 --http-port 8081 --debug
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then kill $(cat server.pid) || true; fi

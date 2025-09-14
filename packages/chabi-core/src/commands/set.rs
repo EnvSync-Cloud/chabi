@@ -1,11 +1,11 @@
-use std::collections::HashMap;
-use crate::resp::RespValue;
-use std::sync::Arc;
-use crate::RwLock;
 use crate::commands::CommandHandler;
+use crate::resp::RespValue;
 use crate::Result;
+use crate::RwLock;
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct SAddCommand {
@@ -22,7 +22,9 @@ impl SAddCommand {
 impl CommandHandler for SAddCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() < 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'sadd' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'sadd' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -64,7 +66,9 @@ impl SMembersCommand {
 impl CommandHandler for SMembersCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'smembers' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'smembers' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -76,7 +80,8 @@ impl CommandHandler for SMembersCommand {
 
         match store.get(&key) {
             Some(set) => {
-                let members: Vec<RespValue> = set.iter()
+                let members: Vec<RespValue> = set
+                    .iter()
                     .map(|s| RespValue::BulkString(Some(s.as_bytes().to_vec())))
                     .collect();
                 Ok(RespValue::Array(Some(members)))
@@ -101,7 +106,9 @@ impl SIsMemberCommand {
 impl CommandHandler for SIsMemberCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'sismember' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'sismember' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -117,7 +124,11 @@ impl CommandHandler for SIsMemberCommand {
         let store = self.store.read().await;
 
         match store.get(&key) {
-            Some(set) => Ok(RespValue::Integer(if set.contains(&member) { 1 } else { 0 })),
+            Some(set) => Ok(RespValue::Integer(if set.contains(&member) {
+                1
+            } else {
+                0
+            })),
             None => Ok(RespValue::Integer(0)),
         }
     }
@@ -138,7 +149,9 @@ impl SCardCommand {
 impl CommandHandler for SCardCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'scard' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'scard' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -170,7 +183,9 @@ impl SRemCommand {
 impl CommandHandler for SRemCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() < 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'srem' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'srem' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {

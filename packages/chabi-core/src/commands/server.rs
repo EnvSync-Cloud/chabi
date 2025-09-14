@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
-use crate::resp::RespValue;
-use std::sync::Arc;
-use crate::RwLock; // use async RwLock from crate
 use crate::commands::CommandHandler;
+use crate::resp::RespValue;
 use crate::Result;
+use crate::RwLock; // use async RwLock from crate
 use async_trait::async_trait;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct InfoCommand {
@@ -50,10 +50,10 @@ impl CommandHandler for InfoCommand {
 
 #[derive(Clone)]
 pub struct SaveCommand {
-    string_store: Arc<RwLock<HashMap<String, String>>>,
-    hash_store: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
-    list_store: Arc<RwLock<HashMap<String, Vec<String>>>>,
-    set_store: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    _string_store: Arc<RwLock<HashMap<String, String>>>,
+    _hash_store: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
+    _list_store: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    _set_store: Arc<RwLock<HashMap<String, HashSet<String>>>>,
 }
 
 impl SaveCommand {
@@ -64,10 +64,10 @@ impl SaveCommand {
         set_store: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     ) -> Self {
         SaveCommand {
-            string_store,
-            hash_store,
-            list_store,
-            set_store,
+            _string_store: string_store,
+            _hash_store: hash_store,
+            _list_store: list_store,
+            _set_store: set_store,
         }
     }
 }

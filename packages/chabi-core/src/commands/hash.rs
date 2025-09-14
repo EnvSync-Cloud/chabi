@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-use crate::resp::RespValue;
-use std::sync::Arc;
-use crate::RwLock;
 use crate::commands::CommandHandler;
+use crate::resp::RespValue;
 use crate::Result;
+use crate::RwLock;
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct HSetCommand {
@@ -21,7 +21,9 @@ impl HSetCommand {
 impl CommandHandler for HSetCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() < 3 || args.len() % 2 != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'hset' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'hset' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -68,7 +70,9 @@ impl HGetCommand {
 impl CommandHandler for HGetCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'hget' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'hget' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -105,7 +109,9 @@ impl HGetAllCommand {
 impl CommandHandler for HGetAllCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'hgetall' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'hgetall' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -144,7 +150,9 @@ impl HExistsCommand {
 impl CommandHandler for HExistsCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'hexists' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'hexists' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -160,11 +168,14 @@ impl CommandHandler for HExistsCommand {
         let store = self.store.read().await;
 
         Ok(RespValue::Integer(
-            if store.get(&key).map_or(false, |hash| hash.contains_key(&field)) {
+            if store
+                .get(&key)
+                .is_some_and(|hash| hash.contains_key(&field))
+            {
                 1
             } else {
                 0
-            }
+            },
         ))
     }
 }
@@ -184,7 +195,9 @@ impl HDelCommand {
 impl CommandHandler for HDelCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() < 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'hdel' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'hdel' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -233,7 +246,9 @@ impl HLenCommand {
 impl CommandHandler for HLenCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'hlen' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'hlen' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -265,7 +280,9 @@ impl HKeysCommand {
 impl CommandHandler for HKeysCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'hkeys' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'hkeys' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -277,7 +294,8 @@ impl CommandHandler for HKeysCommand {
 
         match store.get(&key) {
             Some(hash) => {
-                let keys: Vec<RespValue> = hash.keys()
+                let keys: Vec<RespValue> = hash
+                    .keys()
                     .map(|k| RespValue::BulkString(Some(k.as_bytes().to_vec())))
                     .collect();
                 Ok(RespValue::Array(Some(keys)))
@@ -302,7 +320,9 @@ impl HValsCommand {
 impl CommandHandler for HValsCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'hvals' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'hvals' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -314,7 +334,8 @@ impl CommandHandler for HValsCommand {
 
         match store.get(&key) {
             Some(hash) => {
-                let values: Vec<RespValue> = hash.values()
+                let values: Vec<RespValue> = hash
+                    .values()
                     .map(|v| RespValue::BulkString(Some(v.as_bytes().to_vec())))
                     .collect();
                 Ok(RespValue::Array(Some(values)))

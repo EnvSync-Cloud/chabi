@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-use crate::resp::RespValue;
-use std::sync::Arc;
-use crate::RwLock;
 use crate::commands::CommandHandler;
+use crate::resp::RespValue;
 use crate::Result;
+use crate::RwLock;
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone)]
@@ -22,7 +22,9 @@ impl KeysCommand {
 impl CommandHandler for KeysCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'keys' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'keys' command".to_string(),
+            ));
         }
 
         let pattern = match &args[0] {
@@ -61,7 +63,10 @@ pub struct TTLCommand {
 }
 
 impl TTLCommand {
-    pub fn new(store: Arc<RwLock<HashMap<String, String>>>, expirations: Arc<RwLock<HashMap<String, Instant>>>) -> Self {
+    pub fn new(
+        store: Arc<RwLock<HashMap<String, String>>>,
+        expirations: Arc<RwLock<HashMap<String, Instant>>>,
+    ) -> Self {
         TTLCommand { store, expirations }
     }
 }
@@ -70,7 +75,9 @@ impl TTLCommand {
 impl CommandHandler for TTLCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'ttl' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'ttl' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -119,7 +126,10 @@ pub struct ExpireCommand {
 }
 
 impl ExpireCommand {
-    pub fn new(store: Arc<RwLock<HashMap<String, String>>>, expirations: Arc<RwLock<HashMap<String, Instant>>>) -> Self {
+    pub fn new(
+        store: Arc<RwLock<HashMap<String, String>>>,
+        expirations: Arc<RwLock<HashMap<String, Instant>>>,
+    ) -> Self {
         ExpireCommand { store, expirations }
     }
 }
@@ -128,7 +138,9 @@ impl ExpireCommand {
 impl CommandHandler for ExpireCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'expire' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'expire' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -140,11 +152,19 @@ impl CommandHandler for ExpireCommand {
             RespValue::BulkString(Some(bytes)) => {
                 match String::from_utf8_lossy(bytes).parse::<i64>() {
                     Ok(v) => v,
-                    Err(_) => return Ok(RespValue::Error("ERR value is not an integer or out of range".to_string())),
+                    Err(_) => {
+                        return Ok(RespValue::Error(
+                            "ERR value is not an integer or out of range".to_string(),
+                        ))
+                    }
                 }
             }
             RespValue::Integer(v) => *v,
-            _ => return Ok(RespValue::Error("ERR value is not an integer or out of range".to_string())),
+            _ => {
+                return Ok(RespValue::Error(
+                    "ERR value is not an integer or out of range".to_string(),
+                ))
+            }
         };
 
         // Check existence
@@ -180,7 +200,10 @@ pub struct RenameCommand {
 }
 
 impl RenameCommand {
-    pub fn new(store: Arc<RwLock<HashMap<String, String>>>, expirations: Arc<RwLock<HashMap<String, Instant>>>) -> Self {
+    pub fn new(
+        store: Arc<RwLock<HashMap<String, String>>>,
+        expirations: Arc<RwLock<HashMap<String, Instant>>>,
+    ) -> Self {
         RenameCommand { store, expirations }
     }
 }
@@ -189,7 +212,9 @@ impl RenameCommand {
 impl CommandHandler for RenameCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'rename' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'rename' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {
@@ -203,7 +228,9 @@ impl CommandHandler for RenameCommand {
         };
 
         if key == newkey {
-            return Ok(RespValue::Error("ERR source and destination objects are the same".to_string()));
+            return Ok(RespValue::Error(
+                "ERR source and destination objects are the same".to_string(),
+            ));
         }
 
         // Move value
@@ -239,7 +266,9 @@ impl TypeCommand {
 impl CommandHandler for TypeCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 1 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'type' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'type' command".to_string(),
+            ));
         }
 
         let key = match &args[0] {

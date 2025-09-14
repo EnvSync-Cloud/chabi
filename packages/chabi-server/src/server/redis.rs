@@ -1,22 +1,26 @@
+use chabi_core::commands::CommandHandler;
+use chabi_core::resp::RespValue;
+use chabi_core::Result;
+use chabi_core::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use chabi_core::resp::RespValue;
-use chabi_core::RwLock;
-use chabi_core::commands::CommandHandler;
-use chabi_core::Result;
-use std::time::Instant;
+
+// Simplify complex pubsub channel type
+type PubSubChannels =
+    std::sync::RwLock<HashMap<String, Vec<(usize, mpsc::Sender<(String, String)>)>>>;
 
 static NEXT_CONN_ID: AtomicUsize = AtomicUsize::new(1);
 
 pub struct RedisServer {
     command_registry: Arc<HashMap<String, Box<dyn CommandHandler + Send + Sync>>>,
     // PubSub channels shared with Publish/PubSub commands
-    pubsub_channels: Arc<std::sync::RwLock<HashMap<String, Vec<(usize, mpsc::Sender<(String, String)>)>>>>,
+    pubsub_channels: Arc<PubSubChannels>,
 }
 
 impl RedisServer {
@@ -24,82 +28,282 @@ impl RedisServer {
         let mut command_registry = HashMap::new();
 
         // Initialize stores (async RwLock-backed)
-        let string_store: Arc<RwLock<HashMap<String, String>>> = Arc::new(RwLock::new(HashMap::new()));
-        let list_store: Arc<RwLock<HashMap<String, Vec<String>>>> = Arc::new(RwLock::new(HashMap::new()));
-        let set_store: Arc<RwLock<HashMap<String, HashSet<String>>>> = Arc::new(RwLock::new(HashMap::new()));
-        let hash_store: Arc<RwLock<HashMap<String, HashMap<String, String>>>> = Arc::new(RwLock::new(HashMap::new()));
-        let expirations: Arc<RwLock<HashMap<String, Instant>>> = Arc::new(RwLock::new(HashMap::new()));
+        let string_store: Arc<RwLock<HashMap<String, String>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let list_store: Arc<RwLock<HashMap<String, Vec<String>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let set_store: Arc<RwLock<HashMap<String, HashSet<String>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let hash_store: Arc<RwLock<HashMap<String, HashMap<String, String>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let expirations: Arc<RwLock<HashMap<String, Instant>>> =
+            Arc::new(RwLock::new(HashMap::new()));
 
         // channel -> Vec<(conn_id, Sender<(channel, message)>)>
-        let pubsub_channels: Arc<std::sync::RwLock<HashMap<String, Vec<(usize, mpsc::Sender<(String, String)>)>>>> = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        let pubsub_channels: Arc<PubSubChannels> = Arc::new(std::sync::RwLock::new(HashMap::new()));
 
         // Connection commands
-        command_registry.insert("PING".to_string(), Box::new(chabi_core::commands::connection::PingCommand::new()) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("ECHO".to_string(), Box::new(chabi_core::commands::connection::EchoCommand::new()) as Box<dyn CommandHandler + Send + Sync>);
+        command_registry.insert(
+            "PING".to_string(),
+            Box::new(chabi_core::commands::connection::PingCommand::new())
+                as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "ECHO".to_string(),
+            Box::new(chabi_core::commands::connection::EchoCommand::new())
+                as Box<dyn CommandHandler + Send + Sync>,
+        );
 
         // Register string commands
-        command_registry.insert("SET".to_string(), Box::new(chabi_core::commands::string::SetCommand::new(Arc::clone(&string_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("GET".to_string(), Box::new(chabi_core::commands::string::GetCommand::new(Arc::clone(&string_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("DEL".to_string(), Box::new(chabi_core::commands::string::DelCommand::new(Arc::clone(&string_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("EXISTS".to_string(), Box::new(chabi_core::commands::string::ExistsCommand::new(Arc::clone(&string_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("APPEND".to_string(), Box::new(chabi_core::commands::string::AppendCommand::new(Arc::clone(&string_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("STRLEN".to_string(), Box::new(chabi_core::commands::string::StrlenCommand::new(Arc::clone(&string_store))) as Box<dyn CommandHandler + Send + Sync>);
+        command_registry.insert(
+            "SET".to_string(),
+            Box::new(chabi_core::commands::string::SetCommand::new(Arc::clone(
+                &string_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "GET".to_string(),
+            Box::new(chabi_core::commands::string::GetCommand::new(Arc::clone(
+                &string_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "DEL".to_string(),
+            Box::new(chabi_core::commands::string::DelCommand::new(Arc::clone(
+                &string_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "EXISTS".to_string(),
+            Box::new(chabi_core::commands::string::ExistsCommand::new(
+                Arc::clone(&string_store),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "APPEND".to_string(),
+            Box::new(chabi_core::commands::string::AppendCommand::new(
+                Arc::clone(&string_store),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "STRLEN".to_string(),
+            Box::new(chabi_core::commands::string::StrlenCommand::new(
+                Arc::clone(&string_store),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
 
         // Register list commands
-        command_registry.insert("LPUSH".to_string(), Box::new(chabi_core::commands::list::LPushCommand::new(Arc::clone(&list_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("RPUSH".to_string(), Box::new(chabi_core::commands::list::RPushCommand::new(Arc::clone(&list_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("LPOP".to_string(), Box::new(chabi_core::commands::list::LPopCommand::new(Arc::clone(&list_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("RPOP".to_string(), Box::new(chabi_core::commands::list::RPopCommand::new(Arc::clone(&list_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("LRANGE".to_string(), Box::new(chabi_core::commands::list::LRangeCommand::new(Arc::clone(&list_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("LLEN".to_string(), Box::new(chabi_core::commands::list::LLenCommand::new(Arc::clone(&list_store))) as Box<dyn CommandHandler + Send + Sync>);
+        command_registry.insert(
+            "LPUSH".to_string(),
+            Box::new(chabi_core::commands::list::LPushCommand::new(Arc::clone(
+                &list_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "RPUSH".to_string(),
+            Box::new(chabi_core::commands::list::RPushCommand::new(Arc::clone(
+                &list_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "LPOP".to_string(),
+            Box::new(chabi_core::commands::list::LPopCommand::new(Arc::clone(
+                &list_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "RPOP".to_string(),
+            Box::new(chabi_core::commands::list::RPopCommand::new(Arc::clone(
+                &list_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "LRANGE".to_string(),
+            Box::new(chabi_core::commands::list::LRangeCommand::new(Arc::clone(
+                &list_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "LLEN".to_string(),
+            Box::new(chabi_core::commands::list::LLenCommand::new(Arc::clone(
+                &list_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
 
         // Register set commands
-        command_registry.insert("SADD".to_string(), Box::new(chabi_core::commands::set::SAddCommand::new(Arc::clone(&set_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("SMEMBERS".to_string(), Box::new(chabi_core::commands::set::SMembersCommand::new(Arc::clone(&set_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("SISMEMBER".to_string(), Box::new(chabi_core::commands::set::SIsMemberCommand::new(Arc::clone(&set_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("SCARD".to_string(), Box::new(chabi_core::commands::set::SCardCommand::new(Arc::clone(&set_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("SREM".to_string(), Box::new(chabi_core::commands::set::SRemCommand::new(Arc::clone(&set_store))) as Box<dyn CommandHandler + Send + Sync>);
+        command_registry.insert(
+            "SADD".to_string(),
+            Box::new(chabi_core::commands::set::SAddCommand::new(Arc::clone(
+                &set_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "SMEMBERS".to_string(),
+            Box::new(chabi_core::commands::set::SMembersCommand::new(Arc::clone(
+                &set_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "SISMEMBER".to_string(),
+            Box::new(chabi_core::commands::set::SIsMemberCommand::new(
+                Arc::clone(&set_store),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "SCARD".to_string(),
+            Box::new(chabi_core::commands::set::SCardCommand::new(Arc::clone(
+                &set_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "SREM".to_string(),
+            Box::new(chabi_core::commands::set::SRemCommand::new(Arc::clone(
+                &set_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
 
         // Register hash commands
-        command_registry.insert("HSET".to_string(), Box::new(chabi_core::commands::hash::HSetCommand::new(Arc::clone(&hash_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("HGET".to_string(), Box::new(chabi_core::commands::hash::HGetCommand::new(Arc::clone(&hash_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("HGETALL".to_string(), Box::new(chabi_core::commands::hash::HGetAllCommand::new(Arc::clone(&hash_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("HEXISTS".to_string(), Box::new(chabi_core::commands::hash::HExistsCommand::new(Arc::clone(&hash_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("HDEL".to_string(), Box::new(chabi_core::commands::hash::HDelCommand::new(Arc::clone(&hash_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("HLEN".to_string(), Box::new(chabi_core::commands::hash::HLenCommand::new(Arc::clone(&hash_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("HKEYS".to_string(), Box::new(chabi_core::commands::hash::HKeysCommand::new(Arc::clone(&hash_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("HVALS".to_string(), Box::new(chabi_core::commands::hash::HValsCommand::new(Arc::clone(&hash_store))) as Box<dyn CommandHandler + Send + Sync>);
+        command_registry.insert(
+            "HSET".to_string(),
+            Box::new(chabi_core::commands::hash::HSetCommand::new(Arc::clone(
+                &hash_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "HGET".to_string(),
+            Box::new(chabi_core::commands::hash::HGetCommand::new(Arc::clone(
+                &hash_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "HGETALL".to_string(),
+            Box::new(chabi_core::commands::hash::HGetAllCommand::new(Arc::clone(
+                &hash_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "HEXISTS".to_string(),
+            Box::new(chabi_core::commands::hash::HExistsCommand::new(Arc::clone(
+                &hash_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "HDEL".to_string(),
+            Box::new(chabi_core::commands::hash::HDelCommand::new(Arc::clone(
+                &hash_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "HLEN".to_string(),
+            Box::new(chabi_core::commands::hash::HLenCommand::new(Arc::clone(
+                &hash_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "HKEYS".to_string(),
+            Box::new(chabi_core::commands::hash::HKeysCommand::new(Arc::clone(
+                &hash_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "HVALS".to_string(),
+            Box::new(chabi_core::commands::hash::HValsCommand::new(Arc::clone(
+                &hash_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
 
         // Key commands (use async RwLock-backed store same as string)
-        command_registry.insert("KEYS".to_string(), Box::new(chabi_core::commands::key::KeysCommand::new(Arc::clone(&string_store))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("TTL".to_string(), Box::new(chabi_core::commands::key::TTLCommand::new(Arc::clone(&string_store), Arc::clone(&expirations))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("EXPIRE".to_string(), Box::new(chabi_core::commands::key::ExpireCommand::new(Arc::clone(&string_store), Arc::clone(&expirations))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("RENAME".to_string(), Box::new(chabi_core::commands::key::RenameCommand::new(Arc::clone(&string_store), Arc::clone(&expirations))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("TYPE".to_string(), Box::new(chabi_core::commands::key::TypeCommand::new(Arc::clone(&string_store))) as Box<dyn CommandHandler + Send + Sync>);
+        command_registry.insert(
+            "KEYS".to_string(),
+            Box::new(chabi_core::commands::key::KeysCommand::new(Arc::clone(
+                &string_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "TTL".to_string(),
+            Box::new(chabi_core::commands::key::TTLCommand::new(
+                Arc::clone(&string_store),
+                Arc::clone(&expirations),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "EXPIRE".to_string(),
+            Box::new(chabi_core::commands::key::ExpireCommand::new(
+                Arc::clone(&string_store),
+                Arc::clone(&expirations),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "RENAME".to_string(),
+            Box::new(chabi_core::commands::key::RenameCommand::new(
+                Arc::clone(&string_store),
+                Arc::clone(&expirations),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "TYPE".to_string(),
+            Box::new(chabi_core::commands::key::TypeCommand::new(Arc::clone(
+                &string_store,
+            ))) as Box<dyn CommandHandler + Send + Sync>,
+        );
 
         // Server commands (INFO, SAVE) - use async RwLock-backed stores
-        command_registry.insert("INFO".to_string(), Box::new(chabi_core::commands::server::InfoCommand::new(
-            Arc::clone(&string_store),
-            Arc::clone(&hash_store),
-            Arc::clone(&list_store),
-            Arc::clone(&set_store),
-        )) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("SAVE".to_string(), Box::new(chabi_core::commands::server::SaveCommand::new(
-            Arc::clone(&string_store),
-            Arc::clone(&hash_store),
-            Arc::clone(&list_store),
-            Arc::clone(&set_store),
-        )) as Box<dyn CommandHandler + Send + Sync>);
+        command_registry.insert(
+            "INFO".to_string(),
+            Box::new(chabi_core::commands::server::InfoCommand::new(
+                Arc::clone(&string_store),
+                Arc::clone(&hash_store),
+                Arc::clone(&list_store),
+                Arc::clone(&set_store),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "SAVE".to_string(),
+            Box::new(chabi_core::commands::server::SaveCommand::new(
+                Arc::clone(&string_store),
+                Arc::clone(&hash_store),
+                Arc::clone(&list_store),
+                Arc::clone(&set_store),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
 
         // Documentation commands
-        command_registry.insert("DOCS".to_string(), Box::new(chabi_core::commands::docs::DocsCommand::new()) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("COMMAND".to_string(), Box::new(chabi_core::commands::docs::CommandCommand::new()) as Box<dyn CommandHandler + Send + Sync>);
+        command_registry.insert(
+            "DOCS".to_string(),
+            Box::new(chabi_core::commands::docs::DocsCommand::new())
+                as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "COMMAND".to_string(),
+            Box::new(chabi_core::commands::docs::CommandCommand::new())
+                as Box<dyn CommandHandler + Send + Sync>,
+        );
 
         // Register pubsub commands (Publish and PubSub; Subscribe/Unsubscribe will be handled at connection level)
-        command_registry.insert("PUBLISH".to_string(), Box::new(chabi_core::commands::pubsub::PublishCommand::new(Arc::clone(&pubsub_channels))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("SUBSCRIBE".to_string(), Box::new(chabi_core::commands::pubsub::SubscribeCommand::new(Arc::clone(&pubsub_channels))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("UNSUBSCRIBE".to_string(), Box::new(chabi_core::commands::pubsub::UnsubscribeCommand::new(Arc::clone(&pubsub_channels))) as Box<dyn CommandHandler + Send + Sync>);
-        command_registry.insert("PUBSUB".to_string(), Box::new(chabi_core::commands::pubsub::PubSubCommand::new(Arc::clone(&pubsub_channels))) as Box<dyn CommandHandler + Send + Sync>);
+        command_registry.insert(
+            "PUBLISH".to_string(),
+            Box::new(chabi_core::commands::pubsub::PublishCommand::new(
+                Arc::clone(&pubsub_channels),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "SUBSCRIBE".to_string(),
+            Box::new(chabi_core::commands::pubsub::SubscribeCommand::new(
+                Arc::clone(&pubsub_channels),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "UNSUBSCRIBE".to_string(),
+            Box::new(chabi_core::commands::pubsub::UnsubscribeCommand::new(
+                Arc::clone(&pubsub_channels),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
+        command_registry.insert(
+            "PUBSUB".to_string(),
+            Box::new(chabi_core::commands::pubsub::PubSubCommand::new(
+                Arc::clone(&pubsub_channels),
+            )) as Box<dyn CommandHandler + Send + Sync>,
+        );
 
         RedisServer {
             command_registry: Arc::new(command_registry),
@@ -142,7 +346,7 @@ impl RedisServer {
                                         if !subscriptions.contains(&channel) {
                                             {
                                                 let mut map = self.pubsub_channels.write().unwrap();
-                                                let vec = map.entry(channel.clone()).or_insert_with(Vec::new);
+                                                let vec = map.entry(channel.clone()).or_default();
                                                 vec.push((conn_id, tx.clone()));
                                             }
                                             subscriptions.insert(channel.clone());
@@ -236,8 +440,14 @@ impl RedisServer {
                 }
             }
             // Remove any empty channels
-            let empty: Vec<String> = map.iter().filter(|(_, v)| v.is_empty()).map(|(k, _)| k.clone()).collect();
-            for ch in empty { map.remove(&ch); }
+            let empty: Vec<String> = map
+                .iter()
+                .filter(|(_, v)| v.is_empty())
+                .map(|(k, _)| k.clone())
+                .collect();
+            for ch in empty {
+                map.remove(&ch);
+            }
         }
 
         Ok(())
@@ -250,7 +460,7 @@ impl RedisServer {
         loop {
             let (socket, addr) = listener.accept().await?;
             println!("New connection from {}", addr);
-            
+
             let server = Arc::new(self.clone());
             tokio::spawn(async move {
                 if let Err(e) = server.handle_connection(socket).await {

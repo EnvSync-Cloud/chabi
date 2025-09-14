@@ -1,7 +1,7 @@
 use clap::Parser;
-use prettytable::{Table, Row, Cell};
+use prettytable::{Cell, Row, Table};
 use std::error::Error;
-use tracing::{info, error, Level};
+use tracing::{error, info, Level};
 
 mod tests;
 
@@ -42,7 +42,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     // Initialize logging
-    let level = if args.debug { Level::DEBUG } else { Level::INFO };
+    let level = if args.debug {
+        Level::DEBUG
+    } else {
+        Level::INFO
+    };
     tracing_subscriber::fmt().with_max_level(level).init();
 
     info!("Starting Chabi integration tests...");
@@ -83,7 +87,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Cell::new(&result.name),
             Cell::new(&result.protocol),
             Cell::new(if result.success { "✓" } else { "✗" }),
-            Cell::new(result.message.as_deref().unwrap_or(""))
+            Cell::new(result.message.as_deref().unwrap_or("")),
         ]));
     }
 

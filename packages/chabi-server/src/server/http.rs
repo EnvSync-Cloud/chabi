@@ -1,7 +1,7 @@
-use std::net::SocketAddr;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use chabi_core::Result;
+use std::net::SocketAddr;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 pub struct HttpServer {}
 
@@ -18,7 +18,8 @@ impl HttpServer {
             return Ok(());
         }
 
-        let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\": \"ok\"}";
+        let response =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\": \"ok\"}";
         stream.write_all(response.as_bytes()).await?;
         stream.flush().await?;
 

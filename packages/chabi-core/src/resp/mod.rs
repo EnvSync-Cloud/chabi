@@ -1,8 +1,9 @@
 //! RESP (Redis Serialization Protocol) implementation
 
 use bytes::{Buf, BufMut, BytesMut};
-use tokio_util::codec::{Decoder, Encoder};
+use std::fmt::{self, Display, Formatter};
 use thiserror::Error;
+use tokio_util::codec::{Decoder, Encoder};
 
 #[derive(Error, Debug)]
 pub enum RespError {
@@ -38,37 +39,38 @@ impl RespValue {
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        self.to_string().into_bytes()
+        format!("{}", self).into_bytes()
     }
 }
 
-impl ToString for RespValue {
-    fn to_string(&self) -> String {
+impl Display for RespValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            RespValue::SimpleString(s) => format!("+{}\r\n", s),
-            RespValue::Error(msg) => format!("-{}\r\n", msg),
-            RespValue::Integer(n) => format!(":{}\r\n", n),
+            RespValue::SimpleString(s) => write!(f, "+{}\r\n", s),
+            RespValue::Error(msg) => write!(f, "-{}\r\n", msg),
+            RespValue::Integer(n) => write!(f, ":{}\r\n", n),
             RespValue::BulkString(data) => match data {
                 Some(bytes) => {
                     let s = String::from_utf8_lossy(bytes);
-                    format!("${}\r\n{}\r\n", bytes.len(), s)
+                    write!(f, "${}\r\n{}\r\n", bytes.len(), s)
                 }
-                None => "$-1\r\n".to_string(),
+                None => write!(f, "$-1\r\n"),
             },
             RespValue::Array(items) => match items {
                 Some(array) => {
-                    let mut result = format!("*{}\r\n", array.len());
+                    write!(f, "*{}\r\n", array.len())?;
                     for item in array {
-                        result.push_str(&item.to_string());
+                        write!(f, "{}", item)?;
                     }
-                    result
+                    Ok(())
                 }
-                None => "*-1\r\n".to_string(),
+                None => write!(f, "*-1\r\n"),
             },
         }
     }
 }
 
+#[derive(Default)]
 pub struct RespParser;
 
 impl RespParser {
@@ -198,19 +200,18 @@ impl RespParser {
 
     fn parse_bulk_string(&self, buf: &mut BytesMut) -> Result<Option<RespValue>, RespError> {
         if let Some(len_str) = self.read_line(buf) {
-            let len: i64 = len_str.parse().map_err(|_| RespError::IntegerParseError)?;
-            if len == -1 {
-                return Ok(Some(RespValue::BulkString(None)));
+            match len_str.parse::<isize>() {
+                Ok(-1) => Ok(Some(RespValue::BulkString(None))),
+                Ok(len) if len >= 0 => {
+                    let len = len as usize;
+                    if buf.len() < len + 2 {
+                        return Ok(None);
+                    }
+                    let data = buf.split_to(len + 2);
+                    Ok(Some(RespValue::BulkString(Some(data[..len].to_vec()))))
+                }
+                _ => Err(RespError::InvalidFormat),
             }
-            let len = len as usize;
-
-            if buf.len() < len + 2 {
-                return Ok(None);
-            }
-
-            let data = buf[..len].to_vec();
-            buf.advance(len + 2); // +2 for CRLF
-            Ok(Some(RespValue::BulkString(Some(data))))
         } else {
             Ok(None)
         }
@@ -218,20 +219,21 @@ impl RespParser {
 
     fn parse_array(&mut self, buf: &mut BytesMut) -> Result<Option<RespValue>, RespError> {
         if let Some(len_str) = self.read_line(buf) {
-            let len: i64 = len_str.parse().map_err(|_| RespError::IntegerParseError)?;
-            if len == -1 {
-                return Ok(Some(RespValue::Array(None)));
-            }
-            let len = len as usize;
-
-            let mut items = Vec::with_capacity(len);
-            for _ in 0..len {
-                match self.decode(buf)? {
-                    Some(item) => items.push(item),
-                    None => return Ok(None),
+            match len_str.parse::<isize>() {
+                Ok(-1) => Ok(Some(RespValue::Array(None))),
+                Ok(len) if len >= 0 => {
+                    let len = len as usize;
+                    let mut items = Vec::with_capacity(len);
+                    for _ in 0..len {
+                        match self.decode(buf)? {
+                            Some(item) => items.push(item),
+                            None => return Ok(None),
+                        }
+                    }
+                    Ok(Some(RespValue::Array(Some(items))))
                 }
+                _ => Err(RespError::InvalidFormat),
             }
-            Ok(Some(RespValue::Array(Some(items))))
         } else {
             Ok(None)
         }
@@ -241,72 +243,58 @@ impl RespParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::BytesMut;
 
     #[test]
     fn test_parse_simple_string() {
         let mut parser = RespParser::new();
-        let mut buf = BytesMut::from("+OK\r\n");
-        
-        assert_eq!(
-            parser.decode(&mut buf).unwrap(),
-            Some(RespValue::SimpleString("OK".to_string()))
-        );
+        let mut buf = BytesMut::from("+OK\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, Some(RespValue::SimpleString("OK".to_string())));
     }
 
     #[test]
     fn test_parse_error() {
         let mut parser = RespParser::new();
-        let mut buf = BytesMut::from("-Error message\r\n");
-        
-        assert_eq!(
-            parser.decode(&mut buf).unwrap(),
-            Some(RespValue::Error("Error message".to_string()))
-        );
+        let mut buf = BytesMut::from("-Error message\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, Some(RespValue::Error("Error message".to_string())));
     }
 
     #[test]
     fn test_parse_integer() {
         let mut parser = RespParser::new();
-        let mut buf = BytesMut::from(":1000\r\n");
-        
-        assert_eq!(
-            parser.decode(&mut buf).unwrap(),
-            Some(RespValue::Integer(1000))
-        );
+        let mut buf = BytesMut::from(":1000\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, Some(RespValue::Integer(1000)));
     }
 
     #[test]
     fn test_parse_bulk_string() {
         let mut parser = RespParser::new();
-        let mut buf = BytesMut::from("$5\r\nhello\r\n");
-        
-        assert_eq!(
-            parser.decode(&mut buf).unwrap(),
-            Some(RespValue::BulkString(Some(b"hello".to_vec())))
-        );
+        let mut buf = BytesMut::from("$5\r\nhello\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, Some(RespValue::BulkString(Some(b"hello".to_vec()))));
     }
 
     #[test]
     fn test_parse_null_bulk_string() {
         let mut parser = RespParser::new();
-        let mut buf = BytesMut::from("$-1\r\n");
-        
-        assert_eq!(
-            parser.decode(&mut buf).unwrap(),
-            Some(RespValue::BulkString(None))
-        );
+        let mut buf = BytesMut::from("$-1\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, Some(RespValue::BulkString(None)));
     }
 
     #[test]
     fn test_parse_array() {
         let mut parser = RespParser::new();
-        let mut buf = BytesMut::from("*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n");
-        
+        let mut buf = BytesMut::from("*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
         assert_eq!(
-            parser.decode(&mut buf).unwrap(),
+            result,
             Some(RespValue::Array(Some(vec![
                 RespValue::BulkString(Some(b"hello".to_vec())),
-                RespValue::BulkString(Some(b"world".to_vec()))
+                RespValue::BulkString(Some(b"world".to_vec())),
             ])))
         );
     }
@@ -314,11 +302,8 @@ mod tests {
     #[test]
     fn test_parse_null_array() {
         let mut parser = RespParser::new();
-        let mut buf = BytesMut::from("*-1\r\n");
-        
-        assert_eq!(
-            parser.decode(&mut buf).unwrap(),
-            Some(RespValue::Array(None))
-        );
+        let mut buf = BytesMut::from("*-1\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, Some(RespValue::Array(None)));
     }
 }

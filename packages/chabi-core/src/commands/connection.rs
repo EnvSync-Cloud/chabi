@@ -1,9 +1,9 @@
 //! Connection commands implementation
 
-use async_trait::async_trait;
+use super::CommandHandler;
 use crate::resp::RespValue;
 use crate::Result;
-use super::CommandHandler;
+use async_trait::async_trait;
 
 /// Handler for PING command
 pub struct PingCommand;
@@ -24,6 +24,12 @@ impl CommandHandler for PingCommand {
     }
 }
 
+impl Default for PingCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Handler for ECHO command
 pub struct EchoCommand;
 
@@ -38,8 +44,16 @@ impl CommandHandler for EchoCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         match args.first() {
             Some(message) => Ok(message.clone()),
-            None => Ok(RespValue::Error("ERR wrong number of arguments for 'echo' command".to_string())),
+            None => Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'echo' command".to_string(),
+            )),
         }
+    }
+}
+
+impl Default for EchoCommand {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -50,7 +64,7 @@ mod tests {
     #[tokio::test]
     async fn test_ping_command() {
         let cmd = PingCommand::new();
-        
+
         // Test PING without argument
         let result = cmd.execute(vec![]).await.unwrap();
         assert_eq!(result, RespValue::SimpleString("PONG".to_string()));

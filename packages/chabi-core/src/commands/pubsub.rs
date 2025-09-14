@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-use crate::resp::RespValue;
-use std::sync::{Arc, RwLock};
-use tokio::sync::mpsc::Sender;
 use crate::commands::CommandHandler;
+use crate::resp::RespValue;
 use crate::Result;
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use tokio::sync::mpsc::Sender;
 
 // Updated: store (conn_id, Sender<(channel, message)>) for each subscriber
 pub type ChannelMap = HashMap<String, Vec<(usize, Sender<(String, String)>)>>;
@@ -24,7 +24,9 @@ impl PublishCommand {
 impl CommandHandler for PublishCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.len() != 2 {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'publish' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'publish' command".to_string(),
+            ));
         }
 
         let channel = match &args[0] {
@@ -40,9 +42,7 @@ impl CommandHandler for PublishCommand {
         // First, get all senders for the channel
         let senders = {
             let channels = self.channels.read().unwrap();
-            channels.get(&channel)
-                .map(|s| s.clone())
-                .unwrap_or_default()
+            channels.get(&channel).cloned().unwrap_or_default()
         };
 
         // Send messages and track failed senders
@@ -50,7 +50,11 @@ impl CommandHandler for PublishCommand {
         let mut failed_indices = Vec::new();
 
         for (idx, (_conn_id, sender)) in senders.iter().enumerate() {
-            if sender.send((channel.clone(), message.clone())).await.is_ok() {
+            if sender
+                .send((channel.clone(), message.clone()))
+                .await
+                .is_ok()
+            {
                 receivers += 1;
             } else {
                 failed_indices.push(idx);
@@ -81,12 +85,14 @@ impl CommandHandler for PublishCommand {
 #[derive(Clone)]
 pub struct SubscribeCommand {
     // Kept for compatibility; server handles subscription lifecycle
-    channels: Arc<RwLock<ChannelMap>>,
+    _channels: Arc<RwLock<ChannelMap>>,
 }
 
 impl SubscribeCommand {
     pub fn new(channels: Arc<RwLock<ChannelMap>>) -> Self {
-        SubscribeCommand { channels }
+        SubscribeCommand {
+            _channels: channels,
+        }
     }
 }
 
@@ -94,7 +100,9 @@ impl SubscribeCommand {
 impl CommandHandler for SubscribeCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.is_empty() {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'subscribe' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'subscribe' command".to_string(),
+            ));
         }
 
         // Note: Actual subscribe flow (attaching connection sender and streaming messages)
@@ -120,12 +128,14 @@ impl CommandHandler for SubscribeCommand {
 #[derive(Clone)]
 pub struct UnsubscribeCommand {
     // Kept for compatibility; server handles unsubscription lifecycle
-    channels: Arc<RwLock<ChannelMap>>,
+    _channels: Arc<RwLock<ChannelMap>>,
 }
 
 impl UnsubscribeCommand {
     pub fn new(channels: Arc<RwLock<ChannelMap>>) -> Self {
-        UnsubscribeCommand { channels }
+        UnsubscribeCommand {
+            _channels: channels,
+        }
     }
 }
 
@@ -172,11 +182,15 @@ impl PubSubCommand {
 impl CommandHandler for PubSubCommand {
     async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
         if args.is_empty() {
-            return Ok(RespValue::Error("ERR wrong number of arguments for 'pubsub' command".to_string()));
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'pubsub' command".to_string(),
+            ));
         }
 
         let subcommand = match &args[0] {
-            RespValue::BulkString(Some(bytes)) => String::from_utf8_lossy(bytes).to_string().to_lowercase(),
+            RespValue::BulkString(Some(bytes)) => {
+                String::from_utf8_lossy(bytes).to_string().to_lowercase()
+            }
             _ => return Ok(RespValue::Error("ERR invalid subcommand".to_string())),
         };
 
@@ -195,7 +209,9 @@ impl CommandHandler for PubSubCommand {
 
                 for arg in args.iter().skip(1) {
                     let channel = match arg {
-                        RespValue::BulkString(Some(bytes)) => String::from_utf8_lossy(bytes).to_string(),
+                        RespValue::BulkString(Some(bytes)) => {
+                            String::from_utf8_lossy(bytes).to_string()
+                        }
                         _ => continue,
                     };
 
@@ -208,7 +224,9 @@ impl CommandHandler for PubSubCommand {
                 Ok(RespValue::Array(Some(response)))
             }
             "numpat" => Ok(RespValue::Integer(0)), // Pattern subscriptions not supported
-            _ => Ok(RespValue::Error("ERR Unknown PUBSUB subcommand".to_string())),
+            _ => Ok(RespValue::Error(
+                "ERR Unknown PUBSUB subcommand".to_string(),
+            )),
         }
     }
 }
