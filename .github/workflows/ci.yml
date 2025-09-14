@@ -21,7 +21,7 @@ jobs:
           override: true
 
       - name: Install netcat
-        run: sudo apt-get update && sudo apt-get install -y netcat
+        run: sudo apt-get update && sudo apt-get install -y netcat-openbsd
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
