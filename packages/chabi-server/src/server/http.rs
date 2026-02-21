@@ -30,6 +30,16 @@ impl HttpServer {
         let path = parts.next().unwrap_or("/");
 
         match (method, path) {
+            ("GET", "/metrics") => {
+                let body = self.redis.prometheus_metrics().await;
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4; charset=utf-8\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(headers.as_bytes()).await?;
+                stream.write_all(body.as_bytes()).await?;
+                stream.flush().await?;
+            }
             ("GET", "/snapshot") => {
                 let snapshot = self.redis.build_snapshot().await;
                 match serde_json::to_vec_pretty(&snapshot) {

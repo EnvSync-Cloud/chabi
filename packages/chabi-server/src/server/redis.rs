@@ -52,6 +52,10 @@ pub struct RedisServer {
     expirations: Arc<RwLock<HashMap<String, Instant>>>,
     // Directory path where chabi.kdb resides
     snapshot_dir: Arc<RwLock<Option<String>>>,
+    // Metrics counters
+    total_connections_served: Arc<AtomicUsize>,
+    total_commands_processed: Arc<AtomicUsize>,
+    connected_clients: Arc<AtomicUsize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -342,6 +346,9 @@ impl RedisServer {
             hash_store,
             expirations,
             snapshot_dir,
+            total_connections_served: Arc::new(AtomicUsize::new(0)),
+            total_commands_processed: Arc::new(AtomicUsize::new(0)),
+            connected_clients: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -399,6 +406,56 @@ impl RedisServer {
                 }
             }
         });
+    }
+
+    pub async fn prometheus_metrics(&self) -> String {
+        let connected = self.connected_clients.load(Ordering::Relaxed);
+        let total_conns = self.total_connections_served.load(Ordering::Relaxed);
+        let total_cmds = self.total_commands_processed.load(Ordering::Relaxed);
+
+        let string_count = self.string_store.read().await.len();
+        let list_count = self.list_store.read().await.len();
+        let set_count = self.set_store.read().await.len();
+        let hash_count = self.hash_store.read().await.len();
+        let expiration_count = self.expirations.read().await.len();
+        let pubsub_channels = self
+            .pubsub_channels
+            .read()
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        format!(
+            "# HELP chabi_connected_clients Number of currently connected clients\n\
+             # TYPE chabi_connected_clients gauge\n\
+             chabi_connected_clients {}\n\
+             # HELP chabi_total_connections_served Total connections served since start\n\
+             # TYPE chabi_total_connections_served counter\n\
+             chabi_total_connections_served {}\n\
+             # HELP chabi_total_commands_processed Total commands processed since start\n\
+             # TYPE chabi_total_commands_processed counter\n\
+             chabi_total_commands_processed {}\n\
+             # HELP chabi_keys Number of keys by data type\n\
+             # TYPE chabi_keys gauge\n\
+             chabi_keys{{type=\"string\"}} {}\n\
+             chabi_keys{{type=\"list\"}} {}\n\
+             chabi_keys{{type=\"set\"}} {}\n\
+             chabi_keys{{type=\"hash\"}} {}\n\
+             # HELP chabi_expiring_keys Number of keys with TTL set\n\
+             # TYPE chabi_expiring_keys gauge\n\
+             chabi_expiring_keys {}\n\
+             # HELP chabi_pubsub_channels Number of active pubsub channels\n\
+             # TYPE chabi_pubsub_channels gauge\n\
+             chabi_pubsub_channels {}\n",
+            connected,
+            total_conns,
+            total_cmds,
+            string_count,
+            list_count,
+            set_count,
+            hash_count,
+            expiration_count,
+            pubsub_channels,
+        )
     }
 
     // Build a snapshot of current in-memory data
@@ -679,6 +736,9 @@ impl RedisServer {
         // Low-latency optimization
         let _ = stream.set_nodelay(true);
 
+        self.total_connections_served.fetch_add(1, Ordering::Relaxed);
+        self.connected_clients.fetch_add(1, Ordering::Relaxed);
+
         let registry = Arc::clone(&self.command_registry);
         let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
         let (tx, mut rx) = mpsc::channel::<(String, String)>(100);
@@ -699,6 +759,8 @@ impl RedisServer {
                                         RespValue::BulkString(Some(bytes)) => String::from_utf8_lossy(bytes).to_string().to_uppercase(),
                                         _ => continue,
                                     };
+
+                                    self.total_commands_processed.fetch_add(1, Ordering::Relaxed);
 
                                     match command_name.as_str() {
                                         "SUBSCRIBE" => {
@@ -812,6 +874,8 @@ impl RedisServer {
             }
         }
 
+        self.connected_clients.fetch_sub(1, Ordering::Relaxed);
+
         // Cleanup on disconnect: remove this connection from all channels
         {
             let mut map = self.pubsub_channels.write().unwrap();
@@ -862,6 +926,9 @@ impl Clone for RedisServer {
             hash_store: Arc::clone(&self.hash_store),
             expirations: Arc::clone(&self.expirations),
             snapshot_dir: Arc::clone(&self.snapshot_dir),
+            total_connections_served: Arc::clone(&self.total_connections_served),
+            total_commands_processed: Arc::clone(&self.total_commands_processed),
+            connected_clients: Arc::clone(&self.connected_clients),
         }
     }
 }
