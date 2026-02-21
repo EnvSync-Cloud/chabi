@@ -5,6 +5,13 @@ use crate::resp::RespValue;
 use crate::Result;
 use async_trait::async_trait;
 
+fn extract_string(val: &RespValue) -> Option<String> {
+    match val {
+        RespValue::BulkString(Some(bytes)) => Some(String::from_utf8_lossy(bytes).to_string()),
+        _ => None,
+    }
+}
+
 /// Handler for PING command
 pub struct PingCommand;
 
@@ -57,6 +64,185 @@ impl Default for EchoCommand {
     }
 }
 
+/// Handler for SELECT command
+pub struct SelectCommand;
+
+impl SelectCommand {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SelectCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        let index = match args.first() {
+            Some(RespValue::BulkString(Some(bytes))) => String::from_utf8_lossy(bytes).to_string(),
+            _ => {
+                return Ok(RespValue::Error(
+                    "ERR wrong number of arguments for 'select' command".to_string(),
+                ));
+            }
+        };
+        match index.parse::<u32>() {
+            Ok(0) => Ok(RespValue::SimpleString("OK".to_string())),
+            Ok(_) => Ok(RespValue::Error("ERR DB index is out of range".to_string())),
+            Err(_) => Ok(RespValue::Error(
+                "ERR value is not an integer or out of range".to_string(),
+            )),
+        }
+    }
+}
+
+impl Default for SelectCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Handler for QUIT command
+pub struct QuitCommand;
+
+impl QuitCommand {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Default for QuitCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl CommandHandler for QuitCommand {
+    async fn execute(&self, _args: Vec<RespValue>) -> Result<RespValue> {
+        Ok(RespValue::SimpleString("OK".to_string()))
+    }
+}
+
+/// Handler for RESET command
+pub struct ResetCommand;
+
+impl ResetCommand {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Default for ResetCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl CommandHandler for ResetCommand {
+    async fn execute(&self, _args: Vec<RespValue>) -> Result<RespValue> {
+        Ok(RespValue::SimpleString("RESET".to_string()))
+    }
+}
+
+/// Handler for AUTH command (no password configured - always OK)
+pub struct AuthCommand;
+
+impl AuthCommand {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Default for AuthCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl CommandHandler for AuthCommand {
+    async fn execute(&self, _args: Vec<RespValue>) -> Result<RespValue> {
+        Ok(RespValue::SimpleString("OK".to_string()))
+    }
+}
+
+/// Handler for CLIENT command (stub with SETNAME, GETNAME, ID, LIST)
+pub struct ClientCommand;
+
+impl ClientCommand {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Default for ClientCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl CommandHandler for ClientCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        if args.is_empty() {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'client' command".to_string(),
+            ));
+        }
+        let subcmd = match extract_string(&args[0]) {
+            Some(s) => s.to_uppercase(),
+            None => return Ok(RespValue::Error("ERR invalid subcommand".to_string())),
+        };
+        match subcmd.as_str() {
+            "SETNAME" => Ok(RespValue::SimpleString("OK".to_string())),
+            "GETNAME" => Ok(RespValue::BulkString(None)),
+            "ID" => Ok(RespValue::Integer(1)),
+            "LIST" => Ok(RespValue::BulkString(Some(
+                b"id=1 fd=0 name= db=0".to_vec(),
+            ))),
+            "INFO" => Ok(RespValue::BulkString(Some(
+                b"id=1 fd=0 name= db=0".to_vec(),
+            ))),
+            _ => Ok(RespValue::Error(format!(
+                "ERR unknown subcommand '{}'",
+                subcmd
+            ))),
+        }
+    }
+}
+
+/// Handler for HELLO command
+pub struct HelloCommand;
+
+impl HelloCommand {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Default for HelloCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl CommandHandler for HelloCommand {
+    async fn execute(&self, _args: Vec<RespValue>) -> Result<RespValue> {
+        // Return server info as array of key-value pairs
+        Ok(RespValue::Array(Some(vec![
+            RespValue::BulkString(Some(b"server".to_vec())),
+            RespValue::BulkString(Some(b"chabi".to_vec())),
+            RespValue::BulkString(Some(b"version".to_vec())),
+            RespValue::BulkString(Some(b"0.1.0".to_vec())),
+            RespValue::BulkString(Some(b"proto".to_vec())),
+            RespValue::Integer(2),
+            RespValue::BulkString(Some(b"mode".to_vec())),
+            RespValue::BulkString(Some(b"standalone".to_vec())),
+        ])))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,12 +250,9 @@ mod tests {
     #[tokio::test]
     async fn test_ping_command() {
         let cmd = PingCommand::new();
-
-        // Test PING without argument
         let result = cmd.execute(vec![]).await.unwrap();
         assert_eq!(result, RespValue::SimpleString("PONG".to_string()));
 
-        // Test PING with argument
         let message = RespValue::BulkString(Some("Hello".as_bytes().to_vec()));
         let result = cmd.execute(vec![message.clone()]).await.unwrap();
         assert_eq!(result, message);
@@ -78,14 +261,27 @@ mod tests {
     #[tokio::test]
     async fn test_echo_command() {
         let cmd = EchoCommand::new();
-
-        // Test ECHO without argument
         let result = cmd.execute(vec![]).await.unwrap();
         assert!(matches!(result, RespValue::Error(_)));
 
-        // Test ECHO with argument
         let message = RespValue::BulkString(Some("Hello".as_bytes().to_vec()));
         let result = cmd.execute(vec![message.clone()]).await.unwrap();
         assert_eq!(result, message);
+    }
+
+    #[tokio::test]
+    async fn test_select_command() {
+        let cmd = SelectCommand::new();
+        let result = cmd
+            .execute(vec![RespValue::BulkString(Some(b"0".to_vec()))])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+
+        let result = cmd
+            .execute(vec![RespValue::BulkString(Some(b"1".to_vec()))])
+            .await
+            .unwrap();
+        assert!(matches!(result, RespValue::Error(_)));
     }
 }
