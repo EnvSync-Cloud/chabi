@@ -30,11 +30,11 @@ struct Args {
 }
 
 #[derive(Debug)]
-struct TestResult {
-    name: String,
-    protocol: String,
-    success: bool,
-    message: Option<String>,
+pub struct TestResult {
+    pub name: String,
+    pub protocol: String,
+    pub success: bool,
+    pub message: Option<String>,
 }
 
 #[tokio::main]
@@ -56,13 +56,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Run Redis protocol tests
     match tests::redis::run_tests(&args.redis_host, args.redis_port).await {
         Ok(redis_results) => results.extend(redis_results),
-        Err(e) => error!("Redis tests failed: {}", e),
+        Err(e) => {
+            error!("Redis tests failed to connect: {}", e);
+            results.push(TestResult {
+                name: "Redis Connection".to_string(),
+                protocol: "Redis".to_string(),
+                success: false,
+                message: Some(format!("Connection error: {}", e)),
+            });
+        }
     }
 
     // Run HTTP tests
     match tests::http::run_tests(&args.http_host, args.http_port).await {
         Ok(http_results) => results.extend(http_results),
-        Err(e) => error!("HTTP tests failed: {}", e),
+        Err(e) => {
+            error!("HTTP tests failed to connect: {}", e);
+            results.push(TestResult {
+                name: "HTTP Connection".to_string(),
+                protocol: "HTTP".to_string(),
+                success: false,
+                message: Some(format!("Connection error: {}", e)),
+            });
+        }
     }
 
     // Print results table
@@ -93,6 +109,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     table.printstd();
     info!("Test Summary: {}/{} tests passed", passed, total);
+
+    if passed < total {
+        std::process::exit(1);
+    }
 
     Ok(())
 }

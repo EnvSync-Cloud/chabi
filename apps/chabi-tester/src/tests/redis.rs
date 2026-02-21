@@ -1,3 +1,4 @@
+use futures::StreamExt;
 use redis::AsyncCommands;
 use std::collections::HashSet;
 use tracing::debug;
@@ -91,6 +92,14 @@ pub async fn run_tests(
     results.push(info_result);
     let save_result = test_save(&mut con).await;
     results.push(save_result);
+
+    // PubSub test
+    let pubsub_result = test_pubsub(host, port).await;
+    results.push(pubsub_result);
+
+    // Concurrent connections test
+    let concurrent_result = test_concurrent_connections(host, port).await;
+    results.push(concurrent_result);
 
     Ok(results)
 }
@@ -1297,5 +1306,170 @@ async fn test_save(con: &mut redis::aio::Connection) -> TestResult {
             success: false,
             message: Some(e.to_string()),
         },
+    }
+}
+
+async fn test_pubsub(host: &str, port: u16) -> TestResult {
+    debug!("Running PubSub test");
+    let channel = "test_pubsub_channel";
+    let message = "hello_pubsub";
+
+    let sub_client = match redis::Client::open(format!("redis://{}:{}", host, port)) {
+        Ok(c) => c,
+        Err(e) => {
+            return TestResult {
+                name: "PubSub".to_string(),
+                protocol: "Redis".to_string(),
+                success: false,
+                message: Some(format!("Failed to create subscriber client: {}", e)),
+            };
+        }
+    };
+
+    let pub_client = match redis::Client::open(format!("redis://{}:{}", host, port)) {
+        Ok(c) => c,
+        Err(e) => {
+            return TestResult {
+                name: "PubSub".to_string(),
+                protocol: "Redis".to_string(),
+                success: false,
+                message: Some(format!("Failed to create publisher client: {}", e)),
+            };
+        }
+    };
+
+    let sub_con = match sub_client.get_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            return TestResult {
+                name: "PubSub".to_string(),
+                protocol: "Redis".to_string(),
+                success: false,
+                message: Some(format!("Subscriber connection failed: {}", e)),
+            };
+        }
+    };
+
+    let mut pubsub = sub_con.into_pubsub();
+    if let Err(e) = pubsub.subscribe(channel).await {
+        return TestResult {
+            name: "PubSub".to_string(),
+            protocol: "Redis".to_string(),
+            success: false,
+            message: Some(format!("Subscribe failed: {}", e)),
+        };
+    }
+
+    let mut stream = pubsub.on_message();
+
+    // Publish from a separate connection
+    let mut pub_con = match pub_client.get_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            return TestResult {
+                name: "PubSub".to_string(),
+                protocol: "Redis".to_string(),
+                success: false,
+                message: Some(format!("Publisher connection failed: {}", e)),
+            };
+        }
+    };
+
+    // Small delay to ensure subscription is active
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    if let Err(e) = pub_con.publish::<_, _, i64>(channel, message).await {
+        return TestResult {
+            name: "PubSub".to_string(),
+            protocol: "Redis".to_string(),
+            success: false,
+            message: Some(format!("Publish failed: {}", e)),
+        };
+    }
+
+    // Wait for the message with a timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(5), stream.next()).await {
+        Ok(Some(msg)) => {
+            let payload: String = msg.get_payload().unwrap_or_default();
+            if payload == message {
+                TestResult {
+                    name: "PubSub".to_string(),
+                    protocol: "Redis".to_string(),
+                    success: true,
+                    message: None,
+                }
+            } else {
+                TestResult {
+                    name: "PubSub".to_string(),
+                    protocol: "Redis".to_string(),
+                    success: false,
+                    message: Some(format!("Expected '{}', got '{}'", message, payload)),
+                }
+            }
+        }
+        Ok(None) => TestResult {
+            name: "PubSub".to_string(),
+            protocol: "Redis".to_string(),
+            success: false,
+            message: Some("Stream ended without message".to_string()),
+        },
+        Err(_) => TestResult {
+            name: "PubSub".to_string(),
+            protocol: "Redis".to_string(),
+            success: false,
+            message: Some("Timed out waiting for PubSub message".to_string()),
+        },
+    }
+}
+
+async fn test_concurrent_connections(host: &str, port: u16) -> TestResult {
+    debug!("Running concurrent connections test");
+    let num_tasks = 10;
+    let mut handles = Vec::new();
+
+    for i in 0..num_tasks {
+        let host = host.to_string();
+        let handle = tokio::spawn(async move {
+            let client = redis::Client::open(format!("redis://{}:{}", host, port))?;
+            let mut con = client.get_async_connection().await?;
+            let key = format!("concurrent_test_{}", i);
+            let value = format!("value_{}", i);
+            con.set::<_, _, ()>(&key, &value).await?;
+            let got: String = con.get(&key).await?;
+            con.del::<_, i32>(&key).await?;
+            if got == value {
+                Ok::<bool, redis::RedisError>(true)
+            } else {
+                Ok(false)
+            }
+        });
+        handles.push(handle);
+    }
+
+    let mut all_ok = true;
+    let mut err_msg = None;
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => {
+                all_ok = false;
+                err_msg = Some("Value mismatch in concurrent connection".to_string());
+            }
+            Ok(Err(e)) => {
+                all_ok = false;
+                err_msg = Some(format!("Redis error in concurrent task: {}", e));
+            }
+            Err(e) => {
+                all_ok = false;
+                err_msg = Some(format!("Task join error: {}", e));
+            }
+        }
+    }
+
+    TestResult {
+        name: "Concurrent Connections".to_string(),
+        protocol: "Redis".to_string(),
+        success: all_ok,
+        message: err_msg,
     }
 }
