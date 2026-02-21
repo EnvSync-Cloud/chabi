@@ -305,6 +305,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "chabi-core",
+ "clap",
  "futures",
  "redb",
  "serde",
@@ -320,6 +321,7 @@ name = "chabi-tester"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "futures",
  "prettytable-rs",
  "redis",
  "reqwest",

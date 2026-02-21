@@ -16,3 +16,4 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 chabi-core = { path = "../chabi-core" }
 redb = "3"
 bincode = { version = "2.0", features = ["serde"] }
+clap = { version = "4.0", features = ["derive"] }

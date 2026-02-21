@@ -12,9 +12,10 @@ pub async fn run_server(
     http_port: u16,
     snapshot_path: Option<String>,
     snapshot_interval_secs: u64,
+    bind_host: [u8; 4],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let redis_addr = SocketAddr::from(([127, 0, 0, 1], redis_port));
-    let http_addr = SocketAddr::from(([127, 0, 0, 1], http_port));
+    let redis_addr = SocketAddr::from((bind_host, redis_port));
+    let http_addr = SocketAddr::from((bind_host, http_port));
 
     let redis_server = Arc::new(RedisServer::new());
 
