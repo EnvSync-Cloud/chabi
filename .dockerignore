@@ -1,0 +1,8 @@
+target/
+.git/
+apps/membench/
+*.rdb
+*.bin
+node_modules/
+.github/
+.vscode/
