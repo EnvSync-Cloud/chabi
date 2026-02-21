@@ -418,11 +418,7 @@ impl RedisServer {
         let set_count = self.set_store.read().await.len();
         let hash_count = self.hash_store.read().await.len();
         let expiration_count = self.expirations.read().await.len();
-        let pubsub_channels = self
-            .pubsub_channels
-            .read()
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let pubsub_channels = self.pubsub_channels.read().map(|m| m.len()).unwrap_or(0);
 
         format!(
             "# HELP chabi_connected_clients Number of currently connected clients\n\
@@ -736,7 +732,8 @@ impl RedisServer {
         // Low-latency optimization
         let _ = stream.set_nodelay(true);
 
-        self.total_connections_served.fetch_add(1, Ordering::Relaxed);
+        self.total_connections_served
+            .fetch_add(1, Ordering::Relaxed);
         self.connected_clients.fetch_add(1, Ordering::Relaxed);
 
         let registry = Arc::clone(&self.command_registry);
