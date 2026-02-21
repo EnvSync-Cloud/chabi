@@ -16,10 +16,7 @@ jobs:
           go-version: '1.22'
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install netcat
         run: sudo apt-get update && sudo apt-get install -y netcat-openbsd
