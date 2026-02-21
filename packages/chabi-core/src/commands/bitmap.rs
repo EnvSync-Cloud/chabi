@@ -272,3 +272,137 @@ impl CommandHandler for BitPosCommand {
         Ok(RespValue::Integer(-1))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::CommandHandler;
+
+    fn bulk(s: &str) -> RespValue {
+        RespValue::BulkString(Some(s.as_bytes().to_vec()))
+    }
+
+    #[tokio::test]
+    async fn test_setbit_getbit() {
+        let store = DataStore::new();
+        let setbit = SetBitCommand::new(store.clone());
+        let getbit = GetBitCommand::new(store.clone());
+        // SETBIT key 7 1 -> old bit 0
+        let r = setbit
+            .execute(vec![bulk("mykey"), bulk("7"), bulk("1")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::Integer(0));
+        // GETBIT key 7 -> 1
+        let r = getbit
+            .execute(vec![bulk("mykey"), bulk("7")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::Integer(1));
+        // GETBIT key 0 -> 0
+        let r = getbit
+            .execute(vec![bulk("mykey"), bulk("0")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::Integer(0));
+        // GETBIT nonexistent key
+        let r = getbit
+            .execute(vec![bulk("nokey"), bulk("0")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::Integer(0));
+    }
+
+    #[tokio::test]
+    async fn test_setbit_overwrite() {
+        let store = DataStore::new();
+        let setbit = SetBitCommand::new(store.clone());
+        // Set bit 7 to 1
+        setbit
+            .execute(vec![bulk("k"), bulk("7"), bulk("1")])
+            .await
+            .unwrap();
+        // Set bit 7 to 0 -> old bit 1
+        let r = setbit
+            .execute(vec![bulk("k"), bulk("7"), bulk("0")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::Integer(1));
+    }
+
+    #[tokio::test]
+    async fn test_bitcount() {
+        let store = DataStore::new();
+        let setbit = SetBitCommand::new(store.clone());
+        let bitcount = BitCountCommand::new(store.clone());
+        // Set bits that produce valid ASCII (low bits only)
+        setbit
+            .execute(vec![bulk("k"), bulk("6"), bulk("1")])
+            .await
+            .unwrap();
+        setbit
+            .execute(vec![bulk("k"), bulk("7"), bulk("1")])
+            .await
+            .unwrap();
+        // Byte 0 is 0x03 (valid ASCII), BITCOUNT key -> 2
+        let r = bitcount.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(2));
+        // BITCOUNT nonexistent
+        let r = bitcount.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(0));
+    }
+
+    #[tokio::test]
+    async fn test_bitcount_range() {
+        let store = DataStore::new();
+        let setbit = SetBitCommand::new(store.clone());
+        let bitcount = BitCountCommand::new(store.clone());
+        // Set bits that produce valid ASCII in byte 0 and byte 1
+        setbit
+            .execute(vec![bulk("k"), bulk("7"), bulk("1")])
+            .await
+            .unwrap(); // byte 0, low bit -> 0x01
+        setbit
+            .execute(vec![bulk("k"), bulk("15"), bulk("1")])
+            .await
+            .unwrap(); // byte 1, low bit -> 0x01
+                       // BITCOUNT key 0 0 -> count bits in byte 0 only
+        let r = bitcount
+            .execute(vec![bulk("k"), bulk("0"), bulk("0")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::Integer(1));
+    }
+
+    #[tokio::test]
+    async fn test_bitpos() {
+        let store = DataStore::new();
+        let setbit = SetBitCommand::new(store.clone());
+        let bitpos = BitPosCommand::new(store.clone());
+        // Set bit 7 to 1
+        setbit
+            .execute(vec![bulk("k"), bulk("7"), bulk("1")])
+            .await
+            .unwrap();
+        // BITPOS key 1 -> 7
+        let r = bitpos.execute(vec![bulk("k"), bulk("1")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(7));
+        // BITPOS key 0 -> 0 (first 0 bit)
+        let r = bitpos.execute(vec![bulk("k"), bulk("0")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(0));
+        // BITPOS nonexistent key for bit 1 -> -1
+        let r = bitpos
+            .execute(vec![bulk("nokey"), bulk("1")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::Integer(-1));
+    }
+
+    #[tokio::test]
+    async fn test_setbit_wrong_args() {
+        let store = DataStore::new();
+        let cmd = SetBitCommand::new(store);
+        let r = cmd.execute(vec![bulk("k"), bulk("0")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+}

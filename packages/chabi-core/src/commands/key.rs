@@ -1080,3 +1080,543 @@ impl CommandHandler for ObjectCommand {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::CommandHandler;
+    use crate::storage::DataStore;
+
+    fn bulk(s: &str) -> RespValue {
+        RespValue::BulkString(Some(s.as_bytes().to_vec()))
+    }
+
+    /// Extract the Vec<RespValue> from an Array response.
+    fn unwrap_array(resp: RespValue) -> Vec<RespValue> {
+        match resp {
+            RespValue::Array(Some(v)) => v,
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    /// Extract an integer from a RespValue::Integer.
+    fn unwrap_int(resp: RespValue) -> i64 {
+        match resp {
+            RespValue::Integer(i) => i,
+            other => panic!("expected Integer, got {:?}", other),
+        }
+    }
+
+    /// Extract the inner string from a BulkString.
+    fn unwrap_bulk(resp: RespValue) -> String {
+        match resp {
+            RespValue::BulkString(Some(bytes)) => String::from_utf8(bytes).unwrap(),
+            other => panic!("expected BulkString(Some), got {:?}", other),
+        }
+    }
+
+    /// Extract SimpleString value.
+    fn unwrap_simple(resp: RespValue) -> String {
+        match resp {
+            RespValue::SimpleString(s) => s,
+            other => panic!("expected SimpleString, got {:?}", other),
+        }
+    }
+
+    /// Check if resp is an Error variant containing a substring.
+    fn is_error_containing(resp: &RespValue, substr: &str) -> bool {
+        match resp {
+            RespValue::Error(msg) => msg.contains(substr),
+            _ => false,
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // 1. KEYS * returns all keys across stores
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_keys_pattern() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("foo".to_string(), "v1".to_string());
+        store
+            .lists
+            .write()
+            .await
+            .insert("bar".to_string(), vec!["a".to_string()]);
+        store
+            .sets
+            .write()
+            .await
+            .insert("baz".to_string(), HashSet::from(["x".to_string()]));
+
+        let cmd = KeysCommand::new(store);
+        let resp = cmd.execute(vec![bulk("*")]).await.unwrap();
+        let arr = unwrap_array(resp);
+        let mut keys: Vec<String> = arr.into_iter().map(|v| unwrap_bulk(v)).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["bar", "baz", "foo"]);
+    }
+
+    // ---------------------------------------------------------------
+    // 2. KEYS with h?llo glob pattern
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_keys_glob() {
+        let store = DataStore::new();
+        {
+            let mut s = store.strings.write().await;
+            s.insert("hello".to_string(), "v".to_string());
+            s.insert("hallo".to_string(), "v".to_string());
+            s.insert("hxllo".to_string(), "v".to_string());
+            s.insert("world".to_string(), "v".to_string());
+        }
+
+        let cmd = KeysCommand::new(store);
+        let resp = cmd.execute(vec![bulk("h?llo")]).await.unwrap();
+        let arr = unwrap_array(resp);
+        let mut keys: Vec<String> = arr.into_iter().map(|v| unwrap_bulk(v)).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["hallo", "hello", "hxllo"]);
+    }
+
+    // ---------------------------------------------------------------
+    // 3. TTL returns -1 for key without expiry
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_ttl_no_expiry() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("mykey".to_string(), "val".to_string());
+
+        let cmd = TTLCommand::new(store);
+        let resp = cmd.execute(vec![bulk("mykey")]).await.unwrap();
+        assert_eq!(unwrap_int(resp), -1);
+    }
+
+    // ---------------------------------------------------------------
+    // 4. TTL returns -2 for non-existent key
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_ttl_no_key() {
+        let store = DataStore::new();
+        let cmd = TTLCommand::new(store);
+        let resp = cmd.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(unwrap_int(resp), -2);
+    }
+
+    // ---------------------------------------------------------------
+    // 5. EXPIRE sets TTL, TTL returns positive value
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_expire() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("mykey".to_string(), "val".to_string());
+
+        let expire_cmd = ExpireCommand::new(store.clone());
+        let resp = expire_cmd
+            .execute(vec![bulk("mykey"), bulk("100")])
+            .await
+            .unwrap();
+        assert_eq!(unwrap_int(resp), 1);
+
+        let ttl_cmd = TTLCommand::new(store);
+        let resp = ttl_cmd.execute(vec![bulk("mykey")]).await.unwrap();
+        let ttl = unwrap_int(resp);
+        // Should be roughly 100 seconds (allowing some tolerance)
+        assert!(ttl > 0 && ttl <= 100, "TTL was {}", ttl);
+    }
+
+    // ---------------------------------------------------------------
+    // 6. PEXPIRE sets TTL in ms, PTTL returns positive value
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_pexpire() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("mykey".to_string(), "val".to_string());
+
+        let pexpire_cmd = PExpireCommand::new(store.clone());
+        let resp = pexpire_cmd
+            .execute(vec![bulk("mykey"), bulk("50000")])
+            .await
+            .unwrap();
+        assert_eq!(unwrap_int(resp), 1);
+
+        let pttl_cmd = PTTLCommand::new(store);
+        let resp = pttl_cmd.execute(vec![bulk("mykey")]).await.unwrap();
+        let pttl = unwrap_int(resp);
+        // Should be roughly 50000 ms (allowing some tolerance)
+        assert!(pttl > 0 && pttl <= 50000, "PTTL was {}", pttl);
+    }
+
+    // ---------------------------------------------------------------
+    // 7. RENAME existing key
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_rename() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("oldkey".to_string(), "val".to_string());
+
+        let cmd = RenameCommand::new(store.clone());
+        let resp = cmd
+            .execute(vec![bulk("oldkey"), bulk("newkey")])
+            .await
+            .unwrap();
+        assert_eq!(unwrap_simple(resp), "OK");
+
+        let strings = store.strings.read().await;
+        assert!(!strings.contains_key("oldkey"));
+        assert_eq!(strings.get("newkey").unwrap(), "val");
+    }
+
+    // ---------------------------------------------------------------
+    // 8. RENAME non-existent key returns error
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_rename_no_key() {
+        let store = DataStore::new();
+        let cmd = RenameCommand::new(store);
+        let resp = cmd
+            .execute(vec![bulk("nokey"), bulk("newkey")])
+            .await
+            .unwrap();
+        assert!(is_error_containing(&resp, "no such key"));
+    }
+
+    // ---------------------------------------------------------------
+    // 9. RENAMENX: succeeds if dest doesn't exist, fails if it does
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_renamenx() {
+        let store = DataStore::new();
+        {
+            let mut s = store.strings.write().await;
+            s.insert("src".to_string(), "val".to_string());
+            s.insert("existing".to_string(), "other".to_string());
+        }
+
+        // Rename to a key that doesn't exist => 1
+        let cmd = RenameNxCommand::new(store.clone());
+        let resp = cmd.execute(vec![bulk("src"), bulk("dest")]).await.unwrap();
+        assert_eq!(unwrap_int(resp), 1);
+
+        // Now "dest" exists; try renaming "existing" to "dest" => 0
+        let resp = cmd
+            .execute(vec![bulk("existing"), bulk("dest")])
+            .await
+            .unwrap();
+        assert_eq!(unwrap_int(resp), 0);
+    }
+
+    // ---------------------------------------------------------------
+    // 10. TYPE command for each type
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_type_command() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("skey".to_string(), "v".to_string());
+        store
+            .lists
+            .write()
+            .await
+            .insert("lkey".to_string(), vec!["a".to_string()]);
+        store
+            .sets
+            .write()
+            .await
+            .insert("setkey".to_string(), HashSet::from(["x".to_string()]));
+        store.hashes.write().await.insert(
+            "hkey".to_string(),
+            HashMap::from([("f".to_string(), "v".to_string())]),
+        );
+
+        let cmd = TypeCommand::new(store);
+        assert_eq!(
+            unwrap_simple(cmd.execute(vec![bulk("skey")]).await.unwrap()),
+            "string"
+        );
+        assert_eq!(
+            unwrap_simple(cmd.execute(vec![bulk("lkey")]).await.unwrap()),
+            "list"
+        );
+        assert_eq!(
+            unwrap_simple(cmd.execute(vec![bulk("setkey")]).await.unwrap()),
+            "set"
+        );
+        assert_eq!(
+            unwrap_simple(cmd.execute(vec![bulk("hkey")]).await.unwrap()),
+            "hash"
+        );
+        assert_eq!(
+            unwrap_simple(cmd.execute(vec![bulk("nokey")]).await.unwrap()),
+            "none"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // 11. PERSIST removes TTL
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_persist() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("mykey".to_string(), "val".to_string());
+
+        // Set an expiration first
+        let expire_cmd = ExpireCommand::new(store.clone());
+        expire_cmd
+            .execute(vec![bulk("mykey"), bulk("100")])
+            .await
+            .unwrap();
+
+        // Verify TTL is set
+        let ttl_cmd = TTLCommand::new(store.clone());
+        let ttl = unwrap_int(ttl_cmd.execute(vec![bulk("mykey")]).await.unwrap());
+        assert!(ttl > 0);
+
+        // PERSIST removes the TTL
+        let persist_cmd = PersistCommand::new(store.clone());
+        let resp = persist_cmd.execute(vec![bulk("mykey")]).await.unwrap();
+        assert_eq!(unwrap_int(resp), 1);
+
+        // Now TTL should be -1 (no expiry)
+        let ttl = unwrap_int(ttl_cmd.execute(vec![bulk("mykey")]).await.unwrap());
+        assert_eq!(ttl, -1);
+    }
+
+    // ---------------------------------------------------------------
+    // 12. UNLINK deletes keys across types
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_unlink() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("s1".to_string(), "v".to_string());
+        store
+            .lists
+            .write()
+            .await
+            .insert("l1".to_string(), vec!["a".to_string()]);
+        store
+            .sets
+            .write()
+            .await
+            .insert("set1".to_string(), HashSet::from(["x".to_string()]));
+
+        let cmd = UnlinkCommand::new(store.clone());
+        let resp = cmd
+            .execute(vec![bulk("s1"), bulk("l1"), bulk("set1"), bulk("nokey")])
+            .await
+            .unwrap();
+        // 3 keys deleted (nokey doesn't exist so not counted)
+        assert_eq!(unwrap_int(resp), 3);
+
+        assert!(store.strings.read().await.is_empty());
+        assert!(store.lists.read().await.is_empty());
+        assert!(store.sets.read().await.is_empty());
+    }
+
+    // ---------------------------------------------------------------
+    // 13. RANDOMKEY returns a key or nil
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_randomkey() {
+        let store = DataStore::new();
+
+        // Empty store => nil
+        let cmd = RandomKeyCommand::new(store.clone());
+        let resp = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(resp, RespValue::BulkString(None)));
+
+        // Insert a key, should return something
+        store
+            .strings
+            .write()
+            .await
+            .insert("onlykey".to_string(), "v".to_string());
+        let resp = cmd.execute(vec![]).await.unwrap();
+        assert_eq!(unwrap_bulk(resp), "onlykey");
+    }
+
+    // ---------------------------------------------------------------
+    // 14. SCAN with cursor 0
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_scan_basic() {
+        let store = DataStore::new();
+        {
+            let mut s = store.strings.write().await;
+            s.insert("a".to_string(), "1".to_string());
+            s.insert("b".to_string(), "2".to_string());
+            s.insert("c".to_string(), "3".to_string());
+        }
+
+        let cmd = ScanCommand::new(store);
+        let resp = cmd.execute(vec![bulk("0")]).await.unwrap();
+        let outer = unwrap_array(resp);
+        assert_eq!(outer.len(), 2);
+
+        // Next cursor
+        let next_cursor = unwrap_bulk(outer[0].clone());
+        // With default count=10 and only 3 keys, cursor should be "0" (complete)
+        assert_eq!(next_cursor, "0");
+
+        // Keys returned
+        let keys_arr = unwrap_array(outer[1].clone());
+        let mut keys: Vec<String> = keys_arr.into_iter().map(|v| unwrap_bulk(v)).collect();
+        keys.sort();
+        assert_eq!(keys, vec!["a", "b", "c"]);
+    }
+
+    // ---------------------------------------------------------------
+    // 15. COPY source to dest (basic)
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_copy_basic() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("src".to_string(), "hello".to_string());
+
+        let cmd = CopyCommand::new(store.clone());
+        let resp = cmd.execute(vec![bulk("src"), bulk("dst")]).await.unwrap();
+        assert_eq!(unwrap_int(resp), 1);
+
+        let strings = store.strings.read().await;
+        assert_eq!(strings.get("src").unwrap(), "hello");
+        assert_eq!(strings.get("dst").unwrap(), "hello");
+    }
+
+    // ---------------------------------------------------------------
+    // 16. COPY with REPLACE flag
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_copy_replace() {
+        let store = DataStore::new();
+        {
+            let mut s = store.strings.write().await;
+            s.insert("src".to_string(), "new_val".to_string());
+            s.insert("dst".to_string(), "old_val".to_string());
+        }
+
+        // Without REPLACE => 0 (dest exists)
+        let cmd = CopyCommand::new(store.clone());
+        let resp = cmd.execute(vec![bulk("src"), bulk("dst")]).await.unwrap();
+        assert_eq!(unwrap_int(resp), 0);
+
+        // With REPLACE => 1
+        let resp = cmd
+            .execute(vec![bulk("src"), bulk("dst"), bulk("REPLACE")])
+            .await
+            .unwrap();
+        assert_eq!(unwrap_int(resp), 1);
+
+        let strings = store.strings.read().await;
+        assert_eq!(strings.get("dst").unwrap(), "new_val");
+    }
+
+    // ---------------------------------------------------------------
+    // 17. TOUCH returns count of existing keys
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_touch() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("a".to_string(), "v".to_string());
+        store
+            .lists
+            .write()
+            .await
+            .insert("b".to_string(), vec!["x".to_string()]);
+
+        let cmd = TouchCommand::new(store);
+        let resp = cmd
+            .execute(vec![bulk("a"), bulk("b"), bulk("missing")])
+            .await
+            .unwrap();
+        assert_eq!(unwrap_int(resp), 2);
+    }
+
+    // ---------------------------------------------------------------
+    // 18. OBJECT ENCODING returns "raw"
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    async fn test_object_encoding() {
+        let cmd = ObjectCommand::new();
+        let resp = cmd
+            .execute(vec![bulk("ENCODING"), bulk("somekey")])
+            .await
+            .unwrap();
+        assert_eq!(unwrap_bulk(resp), "raw");
+    }
+
+    // ---------------------------------------------------------------
+    // 19. glob_match helper function
+    // ---------------------------------------------------------------
+    #[test]
+    fn test_glob_match_fn() {
+        // Star matches everything
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*", ""));
+
+        // Question mark matches single char
+        assert!(glob_match("h?llo", "hello"));
+        assert!(glob_match("h?llo", "hallo"));
+        assert!(!glob_match("h?llo", "hllo")); // ? requires exactly 1 char
+
+        // Character class
+        assert!(glob_match("h[ae]llo", "hello"));
+        assert!(glob_match("h[ae]llo", "hallo"));
+        assert!(!glob_match("h[ae]llo", "hillo"));
+
+        // Negated character class
+        assert!(!glob_match("h[^ae]llo", "hello"));
+        assert!(glob_match("h[^ae]llo", "hillo"));
+
+        // Exact match
+        assert!(glob_match("hello", "hello"));
+        assert!(!glob_match("hello", "world"));
+
+        // Star in the middle
+        assert!(glob_match("he*lo", "hello"));
+        assert!(glob_match("he*lo", "helo"));
+        assert!(glob_match("he*lo", "he123lo"));
+
+        // Backslash escape
+        assert!(glob_match("h\\*llo", "h*llo"));
+        assert!(!glob_match("h\\*llo", "hello"));
+    }
+}

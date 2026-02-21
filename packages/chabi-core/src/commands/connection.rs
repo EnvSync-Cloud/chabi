@@ -284,4 +284,94 @@ mod tests {
             .unwrap();
         assert!(matches!(result, RespValue::Error(_)));
     }
+
+    fn bulk(s: &str) -> RespValue {
+        RespValue::BulkString(Some(s.as_bytes().to_vec()))
+    }
+
+    #[tokio::test]
+    async fn test_quit() {
+        let cmd = QuitCommand::new();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert_eq!(r, RespValue::SimpleString("OK".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_reset() {
+        let cmd = ResetCommand::new();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert_eq!(r, RespValue::SimpleString("RESET".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_auth() {
+        let cmd = AuthCommand::new();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert_eq!(r, RespValue::SimpleString("OK".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_client_setname() {
+        let cmd = ClientCommand::new();
+        let r = cmd
+            .execute(vec![bulk("SETNAME"), bulk("myconn")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::SimpleString("OK".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_client_getname() {
+        let cmd = ClientCommand::new();
+        let r = cmd.execute(vec![bulk("GETNAME")]).await.unwrap();
+        assert_eq!(r, RespValue::BulkString(None));
+    }
+
+    #[tokio::test]
+    async fn test_client_id() {
+        let cmd = ClientCommand::new();
+        let r = cmd.execute(vec![bulk("ID")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(1));
+    }
+
+    #[tokio::test]
+    async fn test_client_unknown_subcmd() {
+        let cmd = ClientCommand::new();
+        let r = cmd.execute(vec![bulk("FOOBAR")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_client_wrong_args() {
+        let cmd = ClientCommand::new();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_hello() {
+        let cmd = HelloCommand::new();
+        let r = cmd.execute(vec![]).await.unwrap();
+        match r {
+            RespValue::Array(Some(arr)) => {
+                assert!(arr.len() >= 4); // Has server, version, proto, mode pairs
+            }
+            _ => panic!("Expected Array"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_select_invalid() {
+        let cmd = SelectCommand::new();
+        let r = cmd.execute(vec![bulk("abc")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_ping_with_message() {
+        let cmd = PingCommand::new();
+        let msg = bulk("hello world");
+        let r = cmd.execute(vec![msg.clone()]).await.unwrap();
+        assert_eq!(r, msg);
+    }
 }

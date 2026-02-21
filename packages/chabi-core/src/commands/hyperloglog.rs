@@ -147,3 +147,80 @@ fn simple_hash(data: &[u8]) -> u64 {
     }
     h
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::CommandHandler;
+
+    fn bulk(s: &str) -> RespValue {
+        RespValue::BulkString(Some(s.as_bytes().to_vec()))
+    }
+
+    #[tokio::test]
+    async fn test_pfadd_pfcount() {
+        let store = DataStore::new();
+        let pfadd = PfAddCommand::new(store.clone());
+        let pfcount = PfCountCommand::new(store.clone());
+        // PFADD key a b c -> 1 (changed)
+        let r = pfadd
+            .execute(vec![bulk("hll"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::Integer(1));
+        // PFCOUNT key -> 3
+        let r = pfcount.execute(vec![bulk("hll")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(3));
+        // PFADD key a -> 0 (no change, already exists)
+        let r = pfadd.execute(vec![bulk("hll"), bulk("a")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(0));
+        // PFCOUNT still 3
+        let r = pfcount.execute(vec![bulk("hll")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(3));
+    }
+
+    #[tokio::test]
+    async fn test_pfadd_new_element() {
+        let store = DataStore::new();
+        let pfadd = PfAddCommand::new(store.clone());
+        let pfcount = PfCountCommand::new(store.clone());
+        pfadd.execute(vec![bulk("hll"), bulk("x")]).await.unwrap();
+        pfadd.execute(vec![bulk("hll"), bulk("y")]).await.unwrap();
+        let r = pfcount.execute(vec![bulk("hll")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(2));
+    }
+
+    #[tokio::test]
+    async fn test_pfmerge() {
+        let store = DataStore::new();
+        let pfadd = PfAddCommand::new(store.clone());
+        let pfmerge = PfMergeCommand::new(store.clone());
+        let pfcount = PfCountCommand::new(store.clone());
+        // Create two HLLs
+        pfadd
+            .execute(vec![bulk("hll1"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+        pfadd
+            .execute(vec![bulk("hll2"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        // PFMERGE dest hll1 hll2
+        let r = pfmerge
+            .execute(vec![bulk("dest"), bulk("hll1"), bulk("hll2")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::SimpleString("OK".to_string()));
+        // PFCOUNT dest -> 3 (a, b, c)
+        let r = pfcount.execute(vec![bulk("dest")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(3));
+    }
+
+    #[tokio::test]
+    async fn test_pfcount_empty() {
+        let store = DataStore::new();
+        let pfcount = PfCountCommand::new(store);
+        let r = pfcount.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(0));
+    }
+}

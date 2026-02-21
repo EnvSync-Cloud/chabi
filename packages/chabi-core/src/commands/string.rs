@@ -1111,3 +1111,720 @@ impl CommandHandler for GetExCommand {
         Ok(RespValue::BulkString(Some(value.into_bytes())))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::CommandHandler;
+
+    fn bulk(s: &str) -> RespValue {
+        RespValue::BulkString(Some(s.as_bytes().to_vec()))
+    }
+
+    // 1. test_set_get - basic SET then GET
+    #[tokio::test]
+    async fn test_set_get() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+        let get_cmd = GetCommand::new(store.clone());
+
+        // SET mykey myvalue
+        let res = set_cmd
+            .execute(vec![bulk("mykey"), bulk("myvalue")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::SimpleString("OK".to_string()));
+
+        // GET mykey
+        let res = get_cmd.execute(vec![bulk("mykey")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"myvalue".to_vec())));
+
+        // GET nonexistent
+        let res = get_cmd.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+    }
+
+    // 2. test_set_nx_xx - NX and XX flags
+    #[tokio::test]
+    async fn test_set_nx_xx() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+        let get_cmd = GetCommand::new(store.clone());
+
+        // SET key val NX on nonexistent key -> should succeed
+        let res = set_cmd
+            .execute(vec![bulk("k"), bulk("v1"), bulk("NX")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::SimpleString("OK".to_string()));
+
+        // SET key val NX on existing key -> should return nil
+        let res = set_cmd
+            .execute(vec![bulk("k"), bulk("v2"), bulk("NX")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+
+        // Value should still be v1
+        let res = get_cmd.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"v1".to_vec())));
+
+        // SET key val XX on existing key -> should succeed
+        let res = set_cmd
+            .execute(vec![bulk("k"), bulk("v3"), bulk("XX")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::SimpleString("OK".to_string()));
+
+        let res = get_cmd.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"v3".to_vec())));
+
+        // SET key val XX on nonexistent key -> should return nil
+        let res = set_cmd
+            .execute(vec![bulk("new"), bulk("v"), bulk("XX")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+    }
+
+    // 3. test_set_ex - SET with EX expiration
+    #[tokio::test]
+    async fn test_set_ex() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+
+        // SET key val EX 100
+        let res = set_cmd
+            .execute(vec![bulk("k"), bulk("v"), bulk("EX"), bulk("100")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::SimpleString("OK".to_string()));
+
+        // Verify expiration was set
+        let exps = store.expirations.read().await;
+        assert!(exps.contains_key("k"));
+    }
+
+    // 4. test_set_get_flag - SET with GET flag
+    #[tokio::test]
+    async fn test_set_get_flag() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+
+        // SET key val GET on nonexistent key -> returns nil
+        let res = set_cmd
+            .execute(vec![bulk("k"), bulk("v1"), bulk("GET")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+
+        // SET key val GET on existing key -> returns old value
+        let res = set_cmd
+            .execute(vec![bulk("k"), bulk("v2"), bulk("GET")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"v1".to_vec())));
+    }
+
+    // 5. test_del_single_multi - DEL one key and multiple keys
+    #[tokio::test]
+    async fn test_del_single_multi() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+        let del_cmd = DelCommand::new(store.clone());
+
+        set_cmd.execute(vec![bulk("a"), bulk("1")]).await.unwrap();
+        set_cmd.execute(vec![bulk("b"), bulk("2")]).await.unwrap();
+        set_cmd.execute(vec![bulk("c"), bulk("3")]).await.unwrap();
+
+        // DEL single key
+        let res = del_cmd.execute(vec![bulk("a")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(1));
+
+        // DEL multiple keys (b exists, d does not)
+        let res = del_cmd
+            .execute(vec![bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(2));
+
+        // DEL nonexistent key
+        let res = del_cmd.execute(vec![bulk("a")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(0));
+    }
+
+    // 6. test_exists - EXISTS single and multi-key
+    #[tokio::test]
+    async fn test_exists() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+        let exists_cmd = ExistsCommand::new(store.clone());
+
+        set_cmd.execute(vec![bulk("a"), bulk("1")]).await.unwrap();
+        set_cmd.execute(vec![bulk("b"), bulk("2")]).await.unwrap();
+
+        let res = exists_cmd.execute(vec![bulk("a")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(1));
+
+        let res = exists_cmd.execute(vec![bulk("nonexistent")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(0));
+
+        // Multiple keys, a and b exist, c does not
+        let res = exists_cmd
+            .execute(vec![bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(2));
+    }
+
+    // 7. test_append - APPEND to existing and new key
+    #[tokio::test]
+    async fn test_append() {
+        let store = DataStore::new();
+        let append_cmd = AppendCommand::new(store.clone());
+        let get_cmd = GetCommand::new(store.clone());
+
+        // APPEND to nonexistent key creates it
+        let res = append_cmd
+            .execute(vec![bulk("k"), bulk("hello")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(5));
+
+        // APPEND to existing key
+        let res = append_cmd
+            .execute(vec![bulk("k"), bulk(" world")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(11));
+
+        let res = get_cmd.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"hello world".to_vec())));
+    }
+
+    // 8. test_strlen - STRLEN for existing and missing keys
+    #[tokio::test]
+    async fn test_strlen() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+        let strlen_cmd = StrlenCommand::new(store.clone());
+
+        // STRLEN of nonexistent key -> 0
+        let res = strlen_cmd.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(0));
+
+        set_cmd
+            .execute(vec![bulk("k"), bulk("hello")])
+            .await
+            .unwrap();
+
+        let res = strlen_cmd.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(5));
+    }
+
+    // 9. test_incr_decr - INCR and DECR
+    #[tokio::test]
+    async fn test_incr_decr() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+        let incr_cmd = IncrCommand::new(store.clone());
+        let decr_cmd = DecrCommand::new(store.clone());
+
+        // INCR nonexistent key starts from 0
+        let res = incr_cmd.execute(vec![bulk("counter")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(1));
+
+        let res = incr_cmd.execute(vec![bulk("counter")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(2));
+
+        let res = decr_cmd.execute(vec![bulk("counter")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(1));
+
+        // INCR on non-integer value
+        set_cmd
+            .execute(vec![bulk("str"), bulk("abc")])
+            .await
+            .unwrap();
+        let res = incr_cmd.execute(vec![bulk("str")]).await.unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+    }
+
+    // 10. test_incrby_decrby - INCRBY and DECRBY
+    #[tokio::test]
+    async fn test_incrby_decrby() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+        let incrby_cmd = IncrByCommand::new(store.clone());
+        let decrby_cmd = DecrByCommand::new(store.clone());
+
+        set_cmd.execute(vec![bulk("k"), bulk("10")]).await.unwrap();
+
+        let res = incrby_cmd
+            .execute(vec![bulk("k"), bulk("5")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(15));
+
+        let res = decrby_cmd
+            .execute(vec![bulk("k"), bulk("3")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(12));
+
+        // INCRBY on nonexistent key
+        let res = incrby_cmd
+            .execute(vec![bulk("new"), bulk("7")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(7));
+    }
+
+    // 11. test_incrbyfloat - INCRBYFLOAT
+    #[tokio::test]
+    async fn test_incrbyfloat() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+        let incrbyfloat_cmd = IncrByFloatCommand::new(store.clone());
+
+        set_cmd.execute(vec![bulk("k"), bulk("10")]).await.unwrap();
+
+        let res = incrbyfloat_cmd
+            .execute(vec![bulk("k"), bulk("1.5")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"11.5".to_vec())));
+
+        // Float increment on nonexistent key (starts at 0)
+        let res = incrbyfloat_cmd
+            .execute(vec![bulk("new"), bulk("3.14")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"3.14".to_vec())));
+
+        // Negative increment
+        let res = incrbyfloat_cmd
+            .execute(vec![bulk("new"), bulk("-1.14")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"2".to_vec())));
+    }
+
+    // 12. test_mget_mset - MGET and MSET
+    #[tokio::test]
+    async fn test_mget_mset() {
+        let store = DataStore::new();
+        let mset_cmd = MSetCommand::new(store.clone());
+        let mget_cmd = MGetCommand::new(store.clone());
+
+        // MSET k1 v1 k2 v2
+        let res = mset_cmd
+            .execute(vec![bulk("k1"), bulk("v1"), bulk("k2"), bulk("v2")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::SimpleString("OK".to_string()));
+
+        // MGET k1 k2 k3(missing)
+        let res = mget_cmd
+            .execute(vec![bulk("k1"), bulk("k2"), bulk("k3")])
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            RespValue::Array(Some(vec![
+                RespValue::BulkString(Some(b"v1".to_vec())),
+                RespValue::BulkString(Some(b"v2".to_vec())),
+                RespValue::BulkString(None),
+            ]))
+        );
+    }
+
+    // 13. test_msetnx - MSETNX all-or-nothing semantics
+    #[tokio::test]
+    async fn test_msetnx() {
+        let store = DataStore::new();
+        let msetnx_cmd = MSetNxCommand::new(store.clone());
+        let get_cmd = GetCommand::new(store.clone());
+
+        // MSETNX when none exist -> 1
+        let res = msetnx_cmd
+            .execute(vec![bulk("a"), bulk("1"), bulk("b"), bulk("2")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(1));
+
+        // MSETNX when one key already exists -> 0, none should be set
+        let res = msetnx_cmd
+            .execute(vec![bulk("b"), bulk("new"), bulk("c"), bulk("3")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(0));
+
+        // c should not exist since msetnx was atomic
+        let res = get_cmd.execute(vec![bulk("c")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+
+        // b should still have old value
+        let res = get_cmd.execute(vec![bulk("b")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"2".to_vec())));
+    }
+
+    // 14. test_setnx - SETNX
+    #[tokio::test]
+    async fn test_setnx() {
+        let store = DataStore::new();
+        let setnx_cmd = SetNxCommand::new(store.clone());
+        let get_cmd = GetCommand::new(store.clone());
+
+        // SETNX on nonexistent key -> 1
+        let res = setnx_cmd
+            .execute(vec![bulk("k"), bulk("v1")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(1));
+
+        // SETNX on existing key -> 0
+        let res = setnx_cmd
+            .execute(vec![bulk("k"), bulk("v2")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(0));
+
+        // Value unchanged
+        let res = get_cmd.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"v1".to_vec())));
+    }
+
+    // 15. test_setex - SETEX
+    #[tokio::test]
+    async fn test_setex() {
+        let store = DataStore::new();
+        let setex_cmd = SetExCommand::new(store.clone());
+        let get_cmd = GetCommand::new(store.clone());
+
+        // SETEX key 60 value
+        let res = setex_cmd
+            .execute(vec![bulk("k"), bulk("60"), bulk("val")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::SimpleString("OK".to_string()));
+
+        let res = get_cmd.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"val".to_vec())));
+
+        // Expiration should be set
+        let exps = store.expirations.read().await;
+        assert!(exps.contains_key("k"));
+    }
+
+    // 16. test_psetex - PSETEX
+    #[tokio::test]
+    async fn test_psetex() {
+        let store = DataStore::new();
+        let psetex_cmd = PSetExCommand::new(store.clone());
+        let get_cmd = GetCommand::new(store.clone());
+
+        // PSETEX key 60000 value
+        let res = psetex_cmd
+            .execute(vec![bulk("k"), bulk("60000"), bulk("val")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::SimpleString("OK".to_string()));
+
+        let res = get_cmd.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"val".to_vec())));
+
+        let exps = store.expirations.read().await;
+        assert!(exps.contains_key("k"));
+    }
+
+    // 17. test_getrange - GETRANGE
+    #[tokio::test]
+    async fn test_getrange() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+        let getrange_cmd = GetRangeCommand::new(store.clone());
+
+        set_cmd
+            .execute(vec![bulk("k"), bulk("Hello, World!")])
+            .await
+            .unwrap();
+
+        // GETRANGE k 0 4 -> "Hello"
+        let res = getrange_cmd
+            .execute(vec![bulk("k"), bulk("0"), bulk("4")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"Hello".to_vec())));
+
+        // Negative indices: GETRANGE k -6 -1 -> "World!"
+        let res = getrange_cmd
+            .execute(vec![bulk("k"), bulk("-6"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"World!".to_vec())));
+
+        // Out of range -> empty
+        let res = getrange_cmd
+            .execute(vec![bulk("k"), bulk("50"), bulk("100")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(vec![])));
+
+        // GETRANGE on nonexistent key -> empty
+        let res = getrange_cmd
+            .execute(vec![bulk("nokey"), bulk("0"), bulk("5")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(vec![])));
+    }
+
+    // 18. test_setrange - SETRANGE
+    #[tokio::test]
+    async fn test_setrange() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+        let get_cmd = GetCommand::new(store.clone());
+        let setrange_cmd = SetRangeCommand::new(store.clone());
+
+        set_cmd
+            .execute(vec![bulk("k"), bulk("Hello World")])
+            .await
+            .unwrap();
+
+        // SETRANGE k 6 Redis -> "Hello Redis"
+        let res = setrange_cmd
+            .execute(vec![bulk("k"), bulk("6"), bulk("Redis")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(11));
+
+        let res = get_cmd.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"Hello Redis".to_vec())));
+
+        // SETRANGE on nonexistent key with offset -> zero-padded
+        let res = setrange_cmd
+            .execute(vec![bulk("new"), bulk("5"), bulk("abc")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(8));
+    }
+
+    // 19. test_getdel - GETDEL
+    #[tokio::test]
+    async fn test_getdel() {
+        let store = DataStore::new();
+        let set_cmd = SetCommand::new(store.clone());
+        let get_cmd = GetCommand::new(store.clone());
+        let getdel_cmd = GetDelCommand::new(store.clone());
+
+        set_cmd.execute(vec![bulk("k"), bulk("val")]).await.unwrap();
+
+        // GETDEL returns value and deletes it
+        let res = getdel_cmd.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"val".to_vec())));
+
+        // Key should be gone
+        let res = get_cmd.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+
+        // GETDEL on nonexistent key -> nil
+        let res = getdel_cmd.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+    }
+
+    // 20. test_getex_persist - GETEX with PERSIST
+    #[tokio::test]
+    async fn test_getex_persist() {
+        let store = DataStore::new();
+        let setex_cmd = SetExCommand::new(store.clone());
+        let getex_cmd = GetExCommand::new(store.clone());
+
+        // Set key with expiration
+        setex_cmd
+            .execute(vec![bulk("k"), bulk("100"), bulk("val")])
+            .await
+            .unwrap();
+
+        // Verify expiration exists
+        {
+            let exps = store.expirations.read().await;
+            assert!(exps.contains_key("k"));
+        }
+
+        // GETEX k PERSIST -> returns value and removes expiration
+        let res = getex_cmd
+            .execute(vec![bulk("k"), bulk("PERSIST")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"val".to_vec())));
+
+        // Expiration should be removed
+        let exps = store.expirations.read().await;
+        assert!(!exps.contains_key("k"));
+    }
+
+    // 21. test_wrong_args - error handling for wrong argument counts
+    #[tokio::test]
+    async fn test_wrong_args() {
+        let store = DataStore::new();
+
+        // SET with too few args
+        let res = SetCommand::new(store.clone())
+            .execute(vec![])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        let res = SetCommand::new(store.clone())
+            .execute(vec![bulk("k")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // GET with wrong arg count
+        let res = GetCommand::new(store.clone())
+            .execute(vec![])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        let res = GetCommand::new(store.clone())
+            .execute(vec![bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // DEL with no args
+        let res = DelCommand::new(store.clone())
+            .execute(vec![])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // EXISTS with no args
+        let res = ExistsCommand::new(store.clone())
+            .execute(vec![])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // APPEND with wrong args
+        let res = AppendCommand::new(store.clone())
+            .execute(vec![bulk("k")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // STRLEN with wrong args
+        let res = StrlenCommand::new(store.clone())
+            .execute(vec![])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // INCR with wrong args
+        let res = IncrCommand::new(store.clone())
+            .execute(vec![])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // DECR with wrong args
+        let res = DecrCommand::new(store.clone())
+            .execute(vec![])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // INCRBY with wrong args
+        let res = IncrByCommand::new(store.clone())
+            .execute(vec![bulk("k")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // DECRBY with wrong args
+        let res = DecrByCommand::new(store.clone())
+            .execute(vec![bulk("k")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // INCRBYFLOAT with wrong args
+        let res = IncrByFloatCommand::new(store.clone())
+            .execute(vec![])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // MGET with no args
+        let res = MGetCommand::new(store.clone())
+            .execute(vec![])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // MSET with odd args
+        let res = MSetCommand::new(store.clone())
+            .execute(vec![bulk("k")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // MSETNX with odd args
+        let res = MSetNxCommand::new(store.clone())
+            .execute(vec![bulk("k")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // SETNX with wrong args
+        let res = SetNxCommand::new(store.clone())
+            .execute(vec![bulk("k")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // SETEX with wrong args
+        let res = SetExCommand::new(store.clone())
+            .execute(vec![bulk("k")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // PSETEX with wrong args
+        let res = PSetExCommand::new(store.clone())
+            .execute(vec![bulk("k")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // GETRANGE with wrong args
+        let res = GetRangeCommand::new(store.clone())
+            .execute(vec![bulk("k")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // SETRANGE with wrong args
+        let res = SetRangeCommand::new(store.clone())
+            .execute(vec![bulk("k")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // GETDEL with wrong args
+        let res = GetDelCommand::new(store.clone())
+            .execute(vec![])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // GETEX with no args
+        let res = GetExCommand::new(store.clone())
+            .execute(vec![])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+    }
+}

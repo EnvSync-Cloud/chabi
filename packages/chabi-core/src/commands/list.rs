@@ -888,3 +888,606 @@ impl CommandHandler for LMoveCommand {
         Ok(RespValue::BulkString(Some(element.into_bytes())))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::CommandHandler;
+    use crate::storage::DataStore;
+
+    fn bulk(s: &str) -> RespValue {
+        RespValue::BulkString(Some(s.as_bytes().to_vec()))
+    }
+
+    // 1. LPUSH inserts at head, RPUSH appends at tail; verify with LRANGE 0 -1
+    #[tokio::test]
+    async fn test_lpush_rpush() {
+        let store = DataStore::new();
+        let lpush = LPushCommand::new(store.clone());
+        let rpush = RPushCommand::new(store.clone());
+        let lrange = LRangeCommand::new(store.clone());
+
+        // LPUSH mylist a b c  =>  list is [c, b, a]
+        let res = lpush
+            .execute(vec![bulk("mylist"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(3));
+
+        // RPUSH mylist d e  =>  list is [c, b, a, d, e]
+        let res = rpush
+            .execute(vec![bulk("mylist"), bulk("d"), bulk("e")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(5));
+
+        // Verify full list via LRANGE 0 -1
+        let res = lrange
+            .execute(vec![bulk("mylist"), bulk("0"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            RespValue::Array(Some(vec![
+                bulk("c"),
+                bulk("b"),
+                bulk("a"),
+                bulk("d"),
+                bulk("e"),
+            ]))
+        );
+    }
+
+    // 2. LPOP without count returns a single bulk string
+    #[tokio::test]
+    async fn test_lpop_single() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let lpop = LPopCommand::new(store.clone());
+
+        rpush
+            .execute(vec![bulk("k"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        let res = lpop.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"a".to_vec())));
+
+        // Pop from missing key returns nil
+        let res = lpop.execute(vec![bulk("missing")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+    }
+
+    // 3. LPOP with count returns an array
+    #[tokio::test]
+    async fn test_lpop_count() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let lpop = LPopCommand::new(store.clone());
+
+        rpush
+            .execute(vec![bulk("k"), bulk("a"), bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+
+        let res = lpop.execute(vec![bulk("k"), bulk("2")]).await.unwrap();
+        assert_eq!(
+            res,
+            RespValue::Array(Some(vec![
+                RespValue::BulkString(Some(b"a".to_vec())),
+                RespValue::BulkString(Some(b"b".to_vec())),
+            ]))
+        );
+
+        // Pop with count from missing key returns nil array
+        let res = lpop
+            .execute(vec![bulk("missing"), bulk("2")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Array(None));
+    }
+
+    // 4. RPOP without count and with count
+    #[tokio::test]
+    async fn test_rpop() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let rpop = RPopCommand::new(store.clone());
+
+        rpush
+            .execute(vec![bulk("k"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        // RPOP without count
+        let res = rpop.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"c".to_vec())));
+
+        // RPOP with count=2 from remaining [a, b]
+        let res = rpop.execute(vec![bulk("k"), bulk("2")]).await.unwrap();
+        assert_eq!(
+            res,
+            RespValue::Array(Some(vec![
+                RespValue::BulkString(Some(b"b".to_vec())),
+                RespValue::BulkString(Some(b"a".to_vec())),
+            ]))
+        );
+
+        // RPOP from now-empty key
+        let res = rpop.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+    }
+
+    // 5. LRANGE with various indices including negative
+    #[tokio::test]
+    async fn test_lrange() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let lrange = LRangeCommand::new(store.clone());
+
+        // list = [a, b, c, d, e]
+        rpush
+            .execute(vec![
+                bulk("k"),
+                bulk("a"),
+                bulk("b"),
+                bulk("c"),
+                bulk("d"),
+                bulk("e"),
+            ])
+            .await
+            .unwrap();
+
+        // Positive range: 1..3
+        let res = lrange
+            .execute(vec![bulk("k"), bulk("1"), bulk("3")])
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            RespValue::Array(Some(vec![bulk("b"), bulk("c"), bulk("d")]))
+        );
+
+        // Negative range: last two elements
+        let res = lrange
+            .execute(vec![bulk("k"), bulk("-2"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Array(Some(vec![bulk("d"), bulk("e")])));
+
+        // Out of range returns empty array
+        let res = lrange
+            .execute(vec![bulk("k"), bulk("10"), bulk("20")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Array(Some(vec![])));
+
+        // Missing key returns empty array
+        let res = lrange
+            .execute(vec![bulk("nope"), bulk("0"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Array(Some(vec![])));
+    }
+
+    // 6. LLEN for existing and missing key
+    #[tokio::test]
+    async fn test_llen() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let llen = LLenCommand::new(store.clone());
+
+        // Missing key => 0
+        let res = llen.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(0));
+
+        rpush
+            .execute(vec![bulk("k"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        let res = llen.execute(vec![bulk("k")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(3));
+    }
+
+    // 7. LINDEX with positive and negative indices
+    #[tokio::test]
+    async fn test_lindex() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let lindex = LIndexCommand::new(store.clone());
+
+        // list = [a, b, c]
+        rpush
+            .execute(vec![bulk("k"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        // Positive index
+        let res = lindex.execute(vec![bulk("k"), bulk("0")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"a".to_vec())));
+
+        let res = lindex.execute(vec![bulk("k"), bulk("2")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"c".to_vec())));
+
+        // Negative index: -1 = last
+        let res = lindex.execute(vec![bulk("k"), bulk("-1")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"c".to_vec())));
+
+        // Out of range returns nil
+        let res = lindex.execute(vec![bulk("k"), bulk("10")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+    }
+
+    // 8. LSET at valid and invalid index
+    #[tokio::test]
+    async fn test_lset() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let lset = LSetCommand::new(store.clone());
+        let lindex = LIndexCommand::new(store.clone());
+
+        // list = [a, b, c]
+        rpush
+            .execute(vec![bulk("k"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        // Valid LSET at index 1
+        let res = lset
+            .execute(vec![bulk("k"), bulk("1"), bulk("B")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::SimpleString("OK".to_string()));
+
+        let res = lindex.execute(vec![bulk("k"), bulk("1")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"B".to_vec())));
+
+        // LSET with negative index
+        let res = lset
+            .execute(vec![bulk("k"), bulk("-1"), bulk("C")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::SimpleString("OK".to_string()));
+
+        // Out of range index
+        let res = lset
+            .execute(vec![bulk("k"), bulk("99"), bulk("x")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+
+        // Non-existent key
+        let res = lset
+            .execute(vec![bulk("nope"), bulk("0"), bulk("x")])
+            .await
+            .unwrap();
+        assert!(matches!(res, RespValue::Error(_)));
+    }
+
+    // 9. LTRIM keeps only the specified range
+    #[tokio::test]
+    async fn test_ltrim() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let ltrim = LTrimCommand::new(store.clone());
+        let lrange = LRangeCommand::new(store.clone());
+
+        // list = [a, b, c, d, e]
+        rpush
+            .execute(vec![
+                bulk("k"),
+                bulk("a"),
+                bulk("b"),
+                bulk("c"),
+                bulk("d"),
+                bulk("e"),
+            ])
+            .await
+            .unwrap();
+
+        // LTRIM 1 3 => keep [b, c, d]
+        let res = ltrim
+            .execute(vec![bulk("k"), bulk("1"), bulk("3")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::SimpleString("OK".to_string()));
+
+        let res = lrange
+            .execute(vec![bulk("k"), bulk("0"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            RespValue::Array(Some(vec![bulk("b"), bulk("c"), bulk("d")]))
+        );
+    }
+
+    // 10. LINSERT BEFORE and AFTER
+    #[tokio::test]
+    async fn test_linsert_before_after() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let linsert = LInsertCommand::new(store.clone());
+        let lrange = LRangeCommand::new(store.clone());
+
+        // list = [a, b, c]
+        rpush
+            .execute(vec![bulk("k"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        // LINSERT BEFORE "b" "x"  =>  [a, x, b, c]
+        let res = linsert
+            .execute(vec![bulk("k"), bulk("BEFORE"), bulk("b"), bulk("x")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(4));
+
+        // LINSERT AFTER "b" "y"  =>  [a, x, b, y, c]
+        let res = linsert
+            .execute(vec![bulk("k"), bulk("AFTER"), bulk("b"), bulk("y")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(5));
+
+        let res = lrange
+            .execute(vec![bulk("k"), bulk("0"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            RespValue::Array(Some(vec![
+                bulk("a"),
+                bulk("x"),
+                bulk("b"),
+                bulk("y"),
+                bulk("c"),
+            ]))
+        );
+
+        // Pivot not found returns -1
+        let res = linsert
+            .execute(vec![bulk("k"), bulk("BEFORE"), bulk("zzz"), bulk("w")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(-1));
+
+        // Missing key returns 0
+        let res = linsert
+            .execute(vec![bulk("nope"), bulk("BEFORE"), bulk("a"), bulk("w")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(0));
+    }
+
+    // 11. LREM with positive count (remove from head)
+    #[tokio::test]
+    async fn test_lrem_positive() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let lrem = LRemCommand::new(store.clone());
+        let lrange = LRangeCommand::new(store.clone());
+
+        // list = [a, b, a, c, a]
+        rpush
+            .execute(vec![
+                bulk("k"),
+                bulk("a"),
+                bulk("b"),
+                bulk("a"),
+                bulk("c"),
+                bulk("a"),
+            ])
+            .await
+            .unwrap();
+
+        // LREM k 2 a  => remove first 2 "a" from head => [b, c, a]
+        let res = lrem
+            .execute(vec![bulk("k"), bulk("2"), bulk("a")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(2));
+
+        let res = lrange
+            .execute(vec![bulk("k"), bulk("0"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            RespValue::Array(Some(vec![bulk("b"), bulk("c"), bulk("a")]))
+        );
+    }
+
+    // 12. LREM with count=0 (remove all occurrences)
+    #[tokio::test]
+    async fn test_lrem_zero() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let lrem = LRemCommand::new(store.clone());
+        let lrange = LRangeCommand::new(store.clone());
+
+        // list = [a, b, a, c, a]
+        rpush
+            .execute(vec![
+                bulk("k"),
+                bulk("a"),
+                bulk("b"),
+                bulk("a"),
+                bulk("c"),
+                bulk("a"),
+            ])
+            .await
+            .unwrap();
+
+        // LREM k 0 a  => remove ALL "a" => [b, c]
+        let res = lrem
+            .execute(vec![bulk("k"), bulk("0"), bulk("a")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(3));
+
+        let res = lrange
+            .execute(vec![bulk("k"), bulk("0"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Array(Some(vec![bulk("b"), bulk("c")])));
+    }
+
+    // 13. LPOS basic (find position of an element)
+    #[tokio::test]
+    async fn test_lpos() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let lpos = LPosCommand::new(store.clone());
+
+        // list = [a, b, c, b, d]
+        rpush
+            .execute(vec![
+                bulk("k"),
+                bulk("a"),
+                bulk("b"),
+                bulk("c"),
+                bulk("b"),
+                bulk("d"),
+            ])
+            .await
+            .unwrap();
+
+        // Basic LPOS: first occurrence of "b" is at index 1
+        let res = lpos.execute(vec![bulk("k"), bulk("b")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(1));
+
+        // LPOS with COUNT 0 => all occurrences
+        let res = lpos
+            .execute(vec![bulk("k"), bulk("b"), bulk("COUNT"), bulk("0")])
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            RespValue::Array(Some(vec![RespValue::Integer(1), RespValue::Integer(3),]))
+        );
+
+        // LPOS with RANK 2 => second occurrence of "b" at index 3
+        let res = lpos
+            .execute(vec![bulk("k"), bulk("b"), bulk("RANK"), bulk("2")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Integer(3));
+
+        // Element not found returns nil
+        let res = lpos.execute(vec![bulk("k"), bulk("z")]).await.unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+    }
+
+    // 14. LPUSHX/RPUSHX on existing and missing key
+    #[tokio::test]
+    async fn test_lpushx_rpushx() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let lpushx = LPushXCommand::new(store.clone());
+        let rpushx = RPushXCommand::new(store.clone());
+        let lrange = LRangeCommand::new(store.clone());
+
+        // LPUSHX on missing key does nothing, returns 0
+        let res = lpushx.execute(vec![bulk("k"), bulk("x")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(0));
+
+        // RPUSHX on missing key does nothing, returns 0
+        let res = rpushx.execute(vec![bulk("k"), bulk("x")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(0));
+
+        // Create the list first: [a, b]
+        rpush
+            .execute(vec![bulk("k"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+
+        // LPUSHX on existing key: [x, a, b]
+        let res = lpushx.execute(vec![bulk("k"), bulk("x")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(3));
+
+        // RPUSHX on existing key: [x, a, b, y]
+        let res = rpushx.execute(vec![bulk("k"), bulk("y")]).await.unwrap();
+        assert_eq!(res, RespValue::Integer(4));
+
+        let res = lrange
+            .execute(vec![bulk("k"), bulk("0"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            RespValue::Array(Some(vec![bulk("x"), bulk("a"), bulk("b"), bulk("y"),]))
+        );
+    }
+
+    // 15. LMOVE source LEFT -> dest RIGHT
+    #[tokio::test]
+    async fn test_lmove() {
+        let store = DataStore::new();
+        let rpush = RPushCommand::new(store.clone());
+        let lmove = LMoveCommand::new(store.clone());
+        let lrange = LRangeCommand::new(store.clone());
+
+        // source = [a, b, c]
+        rpush
+            .execute(vec![bulk("src"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        // dest = [x]
+        rpush.execute(vec![bulk("dst"), bulk("x")]).await.unwrap();
+
+        // LMOVE src dst LEFT RIGHT => pops "a" from src left, pushes to dst right
+        let res = lmove
+            .execute(vec![bulk("src"), bulk("dst"), bulk("LEFT"), bulk("RIGHT")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"a".to_vec())));
+
+        // src = [b, c]
+        let res = lrange
+            .execute(vec![bulk("src"), bulk("0"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Array(Some(vec![bulk("b"), bulk("c")])));
+
+        // dst = [x, a]
+        let res = lrange
+            .execute(vec![bulk("dst"), bulk("0"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Array(Some(vec![bulk("x"), bulk("a")])));
+
+        // LMOVE src dst RIGHT LEFT => pops "c" from src right, pushes to dst left
+        let res = lmove
+            .execute(vec![bulk("src"), bulk("dst"), bulk("RIGHT"), bulk("LEFT")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(Some(b"c".to_vec())));
+
+        // src = [b]
+        let res = lrange
+            .execute(vec![bulk("src"), bulk("0"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::Array(Some(vec![bulk("b")])));
+
+        // dst = [c, x, a]
+        let res = lrange
+            .execute(vec![bulk("dst"), bulk("0"), bulk("-1")])
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            RespValue::Array(Some(vec![bulk("c"), bulk("x"), bulk("a")]))
+        );
+
+        // LMOVE from missing key returns nil
+        let res = lmove
+            .execute(vec![bulk("nope"), bulk("dst"), bulk("LEFT"), bulk("RIGHT")])
+            .await
+            .unwrap();
+        assert_eq!(res, RespValue::BulkString(None));
+    }
+}

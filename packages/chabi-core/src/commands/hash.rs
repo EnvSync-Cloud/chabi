@@ -773,3 +773,533 @@ impl CommandHandler for HRandFieldCommand {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::CommandHandler;
+
+    fn bulk(s: &str) -> RespValue {
+        RespValue::BulkString(Some(s.as_bytes().to_vec()))
+    }
+
+    // Helper: create a shared DataStore and HSET some fields into it.
+    async fn seed_hash(store: &DataStore, key: &str, pairs: &[(&str, &str)]) {
+        let mut args = vec![bulk(key)];
+        for (f, v) in pairs {
+            args.push(bulk(f));
+            args.push(bulk(v));
+        }
+        let cmd = HSetCommand::new(store.clone());
+        cmd.execute(args).await.unwrap();
+    }
+
+    // 1. HSET then HGET
+    #[tokio::test]
+    async fn test_hset_hget() {
+        let store = DataStore::new();
+        let hset = HSetCommand::new(store.clone());
+        let result = hset
+            .execute(vec![bulk("myhash"), bulk("field1"), bulk("value1")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        let hget = HGetCommand::new(store.clone());
+        let result = hget
+            .execute(vec![bulk("myhash"), bulk("field1")])
+            .await
+            .unwrap();
+        assert_eq!(result, bulk("value1"));
+
+        // Non-existent field returns nil
+        let result = hget
+            .execute(vec![bulk("myhash"), bulk("nosuchfield")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::BulkString(None));
+    }
+
+    // 2. HSET with multiple field-value pairs
+    #[tokio::test]
+    async fn test_hset_multiple() {
+        let store = DataStore::new();
+        let hset = HSetCommand::new(store.clone());
+        let result = hset
+            .execute(vec![
+                bulk("myhash"),
+                bulk("f1"),
+                bulk("v1"),
+                bulk("f2"),
+                bulk("v2"),
+                bulk("f3"),
+                bulk("v3"),
+            ])
+            .await
+            .unwrap();
+        // All three fields are new
+        assert_eq!(result, RespValue::Integer(3));
+
+        // Overwriting existing fields should return 0 for those
+        let result = hset
+            .execute(vec![
+                bulk("myhash"),
+                bulk("f1"),
+                bulk("updated"),
+                bulk("f4"),
+                bulk("v4"),
+            ])
+            .await
+            .unwrap();
+        // f1 already exists (not counted), f4 is new
+        assert_eq!(result, RespValue::Integer(1));
+
+        // Verify overwritten value
+        let hget = HGetCommand::new(store.clone());
+        let result = hget
+            .execute(vec![bulk("myhash"), bulk("f1")])
+            .await
+            .unwrap();
+        assert_eq!(result, bulk("updated"));
+    }
+
+    // 3. HGETALL returns all field-value pairs
+    #[tokio::test]
+    async fn test_hgetall() {
+        let store = DataStore::new();
+        seed_hash(&store, "h", &[("a", "1"), ("b", "2")]).await;
+
+        let cmd = HGetAllCommand::new(store.clone());
+        let result = cmd.execute(vec![bulk("h")]).await.unwrap();
+
+        if let RespValue::Array(Some(items)) = result {
+            // Should contain 4 elements: field, value, field, value
+            assert_eq!(items.len(), 4);
+            // Collect into a HashMap for order-independent checking
+            let mut map = std::collections::HashMap::new();
+            for chunk in items.chunks(2) {
+                if let (RespValue::BulkString(Some(k)), RespValue::BulkString(Some(v))) =
+                    (&chunk[0], &chunk[1])
+                {
+                    map.insert(
+                        String::from_utf8(k.clone()).unwrap(),
+                        String::from_utf8(v.clone()).unwrap(),
+                    );
+                }
+            }
+            assert_eq!(map.get("a").unwrap(), "1");
+            assert_eq!(map.get("b").unwrap(), "2");
+        } else {
+            panic!("Expected Array, got {:?}", result);
+        }
+
+        // Non-existent key returns empty array
+        let result = cmd.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(result, RespValue::Array(Some(vec![])));
+    }
+
+    // 4. HEXISTS returns 1/0
+    #[tokio::test]
+    async fn test_hexists() {
+        let store = DataStore::new();
+        seed_hash(&store, "h", &[("exists", "yes")]).await;
+
+        let cmd = HExistsCommand::new(store.clone());
+        let result = cmd.execute(vec![bulk("h"), bulk("exists")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        let result = cmd.execute(vec![bulk("h"), bulk("nope")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+
+        // Non-existent key
+        let result = cmd.execute(vec![bulk("nokey"), bulk("f")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+    }
+
+    // 5. HDEL removes fields
+    #[tokio::test]
+    async fn test_hdel() {
+        let store = DataStore::new();
+        seed_hash(&store, "h", &[("a", "1"), ("b", "2"), ("c", "3")]).await;
+
+        let cmd = HDelCommand::new(store.clone());
+        // Delete two fields, one existing and one not
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("a"), bulk("nonexistent")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1)); // only "a" existed
+
+        // Verify "a" is gone
+        let hget = HGetCommand::new(store.clone());
+        let result = hget.execute(vec![bulk("h"), bulk("a")]).await.unwrap();
+        assert_eq!(result, RespValue::BulkString(None));
+
+        // Delete from non-existent key
+        let result = cmd.execute(vec![bulk("nokey"), bulk("x")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+    }
+
+    // 6. HLEN returns count
+    #[tokio::test]
+    async fn test_hlen() {
+        let store = DataStore::new();
+        let cmd = HLenCommand::new(store.clone());
+
+        // Non-existent key
+        let result = cmd.execute(vec![bulk("h")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+
+        seed_hash(&store, "h", &[("a", "1"), ("b", "2"), ("c", "3")]).await;
+        let result = cmd.execute(vec![bulk("h")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(3));
+    }
+
+    // 7. HKEYS returns field names
+    #[tokio::test]
+    async fn test_hkeys() {
+        let store = DataStore::new();
+        seed_hash(&store, "h", &[("x", "1"), ("y", "2")]).await;
+
+        let cmd = HKeysCommand::new(store.clone());
+        let result = cmd.execute(vec![bulk("h")]).await.unwrap();
+
+        if let RespValue::Array(Some(items)) = result {
+            assert_eq!(items.len(), 2);
+            let mut keys: Vec<String> = items
+                .into_iter()
+                .map(|v| {
+                    if let RespValue::BulkString(Some(b)) = v {
+                        String::from_utf8(b).unwrap()
+                    } else {
+                        panic!("unexpected value");
+                    }
+                })
+                .collect();
+            keys.sort();
+            assert_eq!(keys, vec!["x", "y"]);
+        } else {
+            panic!("Expected Array");
+        }
+
+        // Empty key
+        let result = cmd.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(result, RespValue::Array(Some(vec![])));
+    }
+
+    // 8. HVALS returns values
+    #[tokio::test]
+    async fn test_hvals() {
+        let store = DataStore::new();
+        seed_hash(&store, "h", &[("a", "10"), ("b", "20")]).await;
+
+        let cmd = HValsCommand::new(store.clone());
+        let result = cmd.execute(vec![bulk("h")]).await.unwrap();
+
+        if let RespValue::Array(Some(items)) = result {
+            assert_eq!(items.len(), 2);
+            let mut vals: Vec<String> = items
+                .into_iter()
+                .map(|v| {
+                    if let RespValue::BulkString(Some(b)) = v {
+                        String::from_utf8(b).unwrap()
+                    } else {
+                        panic!("unexpected value");
+                    }
+                })
+                .collect();
+            vals.sort();
+            assert_eq!(vals, vec!["10", "20"]);
+        } else {
+            panic!("Expected Array");
+        }
+    }
+
+    // 9. HMGET returns array of values/nulls
+    #[tokio::test]
+    async fn test_hmget() {
+        let store = DataStore::new();
+        seed_hash(&store, "h", &[("f1", "v1"), ("f2", "v2")]).await;
+
+        let cmd = HMGetCommand::new(store.clone());
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("f1"), bulk("missing"), bulk("f2")])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            RespValue::Array(Some(vec![
+                bulk("v1"),
+                RespValue::BulkString(None),
+                bulk("v2"),
+            ]))
+        );
+
+        // Non-existent key: all nil
+        let result = cmd
+            .execute(vec![bulk("nokey"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            RespValue::Array(Some(vec![
+                RespValue::BulkString(None),
+                RespValue::BulkString(None),
+            ]))
+        );
+    }
+
+    // 10. HINCRBY increments integer field
+    #[tokio::test]
+    async fn test_hincrby() {
+        let store = DataStore::new();
+        let cmd = HIncrByCommand::new(store.clone());
+
+        // Increment non-existent field (starts at 0)
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("counter"), bulk("5")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(5));
+
+        // Increment again
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("counter"), bulk("3")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(8));
+
+        // Negative increment
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("counter"), bulk("-2")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(6));
+
+        // Verify via HGET
+        let hget = HGetCommand::new(store.clone());
+        let result = hget
+            .execute(vec![bulk("h"), bulk("counter")])
+            .await
+            .unwrap();
+        assert_eq!(result, bulk("6"));
+    }
+
+    // 11. HINCRBYFLOAT increments float field
+    #[tokio::test]
+    async fn test_hincrbyfloat() {
+        let store = DataStore::new();
+        let cmd = HIncrByFloatCommand::new(store.clone());
+
+        // Non-existent field starts at 0.0
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("price"), bulk("10.5")])
+            .await
+            .unwrap();
+        assert_eq!(result, bulk("10.5"));
+
+        // Increment by negative
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("price"), bulk("-3.2")])
+            .await
+            .unwrap();
+        // 10.5 - 3.2 = 7.3
+        if let RespValue::BulkString(Some(bytes)) = result {
+            let val: f64 = String::from_utf8(bytes).unwrap().parse().unwrap();
+            assert!((val - 7.3).abs() < 1e-9);
+        } else {
+            panic!("Expected BulkString");
+        }
+    }
+
+    // 12. HSETNX only sets if field doesn't exist
+    #[tokio::test]
+    async fn test_hsetnx() {
+        let store = DataStore::new();
+        let cmd = HSetNxCommand::new(store.clone());
+
+        // Field doesn't exist -> set it
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("f"), bulk("first")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        // Field already exists -> no-op
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("f"), bulk("second")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+
+        // Verify original value is retained
+        let hget = HGetCommand::new(store.clone());
+        let result = hget.execute(vec![bulk("h"), bulk("f")]).await.unwrap();
+        assert_eq!(result, bulk("first"));
+    }
+
+    // 13. HSTRLEN returns length of field value
+    #[tokio::test]
+    async fn test_hstrlen() {
+        let store = DataStore::new();
+        seed_hash(&store, "h", &[("greeting", "hello")]).await;
+
+        let cmd = HStrLenCommand::new(store.clone());
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("greeting")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(5));
+
+        // Non-existent field
+        let result = cmd.execute(vec![bulk("h"), bulk("nope")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+
+        // Non-existent key
+        let result = cmd.execute(vec![bulk("nokey"), bulk("f")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+    }
+
+    // 14. HSCAN basic iteration
+    #[tokio::test]
+    async fn test_hscan() {
+        let store = DataStore::new();
+        seed_hash(
+            &store,
+            "h",
+            &[("alpha", "1"), ("beta", "2"), ("gamma", "3")],
+        )
+        .await;
+
+        let cmd = HScanCommand::new(store.clone());
+
+        // Full scan with cursor 0 and high count
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("0"), bulk("COUNT"), bulk("100")])
+            .await
+            .unwrap();
+        if let RespValue::Array(Some(outer)) = result {
+            assert_eq!(outer.len(), 2);
+            // Next cursor should be "0" (all returned)
+            assert_eq!(outer[0], bulk("0"));
+            if let RespValue::Array(Some(ref items)) = outer[1] {
+                // 3 fields * 2 (field+value) = 6 elements
+                assert_eq!(items.len(), 6);
+            } else {
+                panic!("Expected inner array");
+            }
+        } else {
+            panic!("Expected Array");
+        }
+
+        // MATCH pattern
+        let result = cmd
+            .execute(vec![
+                bulk("h"),
+                bulk("0"),
+                bulk("MATCH"),
+                bulk("a*"),
+                bulk("COUNT"),
+                bulk("100"),
+            ])
+            .await
+            .unwrap();
+        if let RespValue::Array(Some(outer)) = result {
+            if let RespValue::Array(Some(ref items)) = outer[1] {
+                // Only "alpha" matches "a*"
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], bulk("alpha"));
+                assert_eq!(items[1], bulk("1"));
+            } else {
+                panic!("Expected inner array");
+            }
+        } else {
+            panic!("Expected Array");
+        }
+
+        // Non-existent key
+        let result = cmd.execute(vec![bulk("nokey"), bulk("0")]).await.unwrap();
+        if let RespValue::Array(Some(outer)) = result {
+            assert_eq!(outer[0], bulk("0"));
+            assert_eq!(outer[1], RespValue::Array(Some(vec![])));
+        } else {
+            panic!("Expected Array");
+        }
+    }
+
+    // 15. HRANDFIELD returns random field(s)
+    #[tokio::test]
+    async fn test_hrandfield() {
+        let store = DataStore::new();
+        seed_hash(&store, "h", &[("a", "1"), ("b", "2"), ("c", "3")]).await;
+
+        let cmd = HRandFieldCommand::new(store.clone());
+
+        // Single random field (no count arg)
+        let result = cmd.execute(vec![bulk("h")]).await.unwrap();
+        if let RespValue::BulkString(Some(bytes)) = result {
+            let field = String::from_utf8(bytes).unwrap();
+            assert!(
+                ["a", "b", "c"].contains(&field.as_str()),
+                "unexpected field: {}",
+                field
+            );
+        } else {
+            panic!("Expected BulkString, got {:?}", result);
+        }
+
+        // Positive count: returns up to N unique fields
+        let result = cmd.execute(vec![bulk("h"), bulk("2")]).await.unwrap();
+        if let RespValue::Array(Some(items)) = result {
+            assert_eq!(items.len(), 2);
+            // All returned fields should be valid
+            for item in &items {
+                if let RespValue::BulkString(Some(b)) = item {
+                    let f = String::from_utf8(b.clone()).unwrap();
+                    assert!(["a", "b", "c"].contains(&f.as_str()));
+                } else {
+                    panic!("Expected BulkString");
+                }
+            }
+        } else {
+            panic!("Expected Array");
+        }
+
+        // Positive count with WITHVALUES
+        let result = cmd
+            .execute(vec![bulk("h"), bulk("2"), bulk("WITHVALUES")])
+            .await
+            .unwrap();
+        if let RespValue::Array(Some(items)) = result {
+            // 2 fields * 2 (field+value) = 4 elements
+            assert_eq!(items.len(), 4);
+        } else {
+            panic!("Expected Array");
+        }
+
+        // Negative count: may return duplicates, length = abs(count)
+        let result = cmd.execute(vec![bulk("h"), bulk("-5")]).await.unwrap();
+        if let RespValue::Array(Some(items)) = result {
+            assert_eq!(items.len(), 5);
+        } else {
+            panic!("Expected Array");
+        }
+
+        // Count exceeding hash size: returns at most hash.len() unique fields
+        let result = cmd.execute(vec![bulk("h"), bulk("100")]).await.unwrap();
+        if let RespValue::Array(Some(items)) = result {
+            assert_eq!(items.len(), 3); // only 3 fields exist
+        } else {
+            panic!("Expected Array");
+        }
+
+        // Non-existent key with count
+        let result = cmd.execute(vec![bulk("nokey"), bulk("2")]).await.unwrap();
+        assert_eq!(result, RespValue::Array(Some(vec![])));
+
+        // Non-existent key without count
+        let result = cmd.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(result, RespValue::BulkString(None));
+    }
+}

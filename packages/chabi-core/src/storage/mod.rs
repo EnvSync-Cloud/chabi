@@ -156,4 +156,141 @@ mod tests {
         assert_eq!(store2.strings.read().await.get("k1").unwrap(), "v1");
         assert_eq!(store2.lists.read().await.get("l1").unwrap().len(), 1);
     }
+
+    #[tokio::test]
+    async fn test_default_impl() {
+        let store = DataStore::default();
+        assert!(store.strings.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_with_expirations() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("k1".to_string(), "v1".to_string());
+        // Set an expiration 1 hour from now
+        let deadline = Instant::now() + Duration::from_secs(3600);
+        store
+            .expirations
+            .write()
+            .await
+            .insert("k1".to_string(), deadline);
+
+        let snapshot = store.build_snapshot().await;
+        assert_eq!(snapshot.strings.len(), 1);
+        assert_eq!(snapshot.expirations_epoch_secs.len(), 1);
+        // The epoch timestamp should be roughly now + 3600
+        let ts = snapshot.expirations_epoch_secs.get("k1").unwrap();
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(*ts > now_epoch + 3500);
+        assert!(*ts < now_epoch + 3700);
+    }
+
+    #[tokio::test]
+    async fn test_restore_snapshot_with_expirations() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("k1".to_string(), "v1".to_string());
+        let deadline = Instant::now() + Duration::from_secs(3600);
+        store
+            .expirations
+            .write()
+            .await
+            .insert("k1".to_string(), deadline);
+
+        let snapshot = store.build_snapshot().await;
+
+        let store2 = DataStore::new();
+        store2.restore_from_snapshot(snapshot).await;
+        assert_eq!(store2.strings.read().await.get("k1").unwrap(), "v1");
+        assert!(store2.expirations.read().await.contains_key("k1"));
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_with_sorted_sets_and_hll() {
+        use crate::commands::sorted_set::SortedSet;
+        let store = DataStore::new();
+        let mut zset = SortedSet::new();
+        zset.insert("member1".to_string(), 1.0);
+        zset.insert("member2".to_string(), 2.0);
+        store
+            .sorted_sets
+            .write()
+            .await
+            .insert("zkey".to_string(), zset);
+        store
+            .hll
+            .write()
+            .await
+            .insert("hll1".to_string(), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+
+        let snapshot = store.build_snapshot().await;
+        assert_eq!(snapshot.sorted_sets.len(), 1);
+        assert_eq!(snapshot.hll.len(), 1);
+
+        let store2 = DataStore::new();
+        store2.restore_from_snapshot(snapshot).await;
+        let ss = store2.sorted_sets.read().await;
+        let zset = ss.get("zkey").unwrap();
+        assert_eq!(zset.len(), 2);
+        assert_eq!(zset.score("member1"), Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_all_types() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("s1".to_string(), "v1".to_string());
+        store
+            .lists
+            .write()
+            .await
+            .insert("l1".to_string(), vec!["a".to_string()]);
+        store.sets.write().await.insert(
+            "set1".to_string(),
+            std::collections::HashSet::from(["m1".to_string()]),
+        );
+        store.hashes.write().await.insert(
+            "h1".to_string(),
+            std::collections::HashMap::from([("f1".to_string(), "v1".to_string())]),
+        );
+
+        let snapshot = store.build_snapshot().await;
+        assert_eq!(snapshot.strings.len(), 1);
+        assert_eq!(snapshot.lists.len(), 1);
+        assert_eq!(snapshot.sets.len(), 1);
+        assert_eq!(snapshot.hashes.len(), 1);
+
+        let store2 = DataStore::new();
+        store2.restore_from_snapshot(snapshot).await;
+        assert_eq!(store2.strings.read().await.len(), 1);
+        assert_eq!(store2.lists.read().await.len(), 1);
+        assert_eq!(store2.sets.read().await.len(), 1);
+        assert_eq!(store2.hashes.read().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_clone_is_cheap() {
+        let store = DataStore::new();
+        store
+            .strings
+            .write()
+            .await
+            .insert("k".to_string(), "v".to_string());
+        let store2 = store.clone();
+        // Both clones share the same underlying data
+        assert_eq!(store2.strings.read().await.get("k").unwrap(), "v");
+    }
 }

@@ -258,3 +258,137 @@ impl CommandHandler for BgSaveCommand {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::CommandHandler;
+
+    fn bulk(s: &str) -> RespValue {
+        RespValue::BulkString(Some(s.as_bytes().to_vec()))
+    }
+
+    #[tokio::test]
+    async fn test_info() {
+        let store = DataStore::new();
+        let cmd = InfoCommand::new(store);
+        let r = cmd.execute(vec![]).await.unwrap();
+        match r {
+            RespValue::BulkString(Some(bytes)) => {
+                let s = String::from_utf8_lossy(&bytes);
+                assert!(s.contains("redis_version"));
+            }
+            _ => panic!("Expected BulkString"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dbsize() {
+        let store = DataStore::new();
+        store.strings.write().await.insert("k1".into(), "v1".into());
+        store
+            .lists
+            .write()
+            .await
+            .insert("l1".into(), vec!["a".into()]);
+        let cmd = DbSizeCommand::new(store);
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(2));
+    }
+
+    #[tokio::test]
+    async fn test_flushdb() {
+        let store = DataStore::new();
+        store.strings.write().await.insert("k1".into(), "v1".into());
+        store
+            .lists
+            .write()
+            .await
+            .insert("l1".into(), vec!["a".into()]);
+        store
+            .sets
+            .write()
+            .await
+            .insert("s1".into(), std::collections::HashSet::from(["m".into()]));
+        let cmd = FlushDbCommand::new(store.clone());
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert_eq!(r, RespValue::SimpleString("OK".to_string()));
+        assert!(store.strings.read().await.is_empty());
+        assert!(store.lists.read().await.is_empty());
+        assert!(store.sets.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_config_get_set() {
+        let cmd = ConfigCommand::new();
+        let r = cmd
+            .execute(vec![bulk("GET"), bulk("maxmemory")])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Array(Some(_))));
+        let r = cmd
+            .execute(vec![bulk("SET"), bulk("maxmemory"), bulk("100")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::SimpleString("OK".to_string()));
+        let r = cmd.execute(vec![bulk("RESETSTAT")]).await.unwrap();
+        assert_eq!(r, RespValue::SimpleString("OK".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_config_wrong_args() {
+        let cmd = ConfigCommand::new();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_command_count() {
+        let cmd = CommandCommand::new();
+        let r = cmd.execute(vec![bulk("COUNT")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(100));
+    }
+
+    #[tokio::test]
+    async fn test_command_docs() {
+        let cmd = CommandCommand::new();
+        let r = cmd.execute(vec![bulk("DOCS")]).await.unwrap();
+        assert!(matches!(r, RespValue::Array(Some(_))));
+    }
+
+    #[tokio::test]
+    async fn test_command_no_args() {
+        let cmd = CommandCommand::new();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Array(Some(_))));
+    }
+
+    #[tokio::test]
+    async fn test_time() {
+        let cmd = TimeCommand::new();
+        let r = cmd.execute(vec![]).await.unwrap();
+        match r {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 2);
+            }
+            _ => panic!("Expected Array"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_save() {
+        let cmd = SaveCommand::new();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert_eq!(r, RespValue::SimpleString("OK".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_bgsave() {
+        let cmd = BgSaveCommand::new();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert_eq!(
+            r,
+            RespValue::SimpleString("Background saving started".to_string())
+        );
+    }
+}

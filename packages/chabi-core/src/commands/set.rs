@@ -1158,3 +1158,533 @@ impl CommandHandler for SInterCardCommand {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::CommandHandler;
+
+    fn bulk(s: &str) -> RespValue {
+        RespValue::BulkString(Some(s.as_bytes().to_vec()))
+    }
+
+    /// Helper: extract strings from a RespValue::Array result and return them as a sorted Vec.
+    fn extract_members(resp: &RespValue) -> Vec<String> {
+        match resp {
+            RespValue::Array(Some(arr)) => {
+                let mut v: Vec<String> = arr
+                    .iter()
+                    .filter_map(|r| match r {
+                        RespValue::BulkString(Some(bytes)) => {
+                            Some(String::from_utf8_lossy(bytes).to_string())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                v.sort();
+                v
+            }
+            _ => panic!("expected Array, got {:?}", resp),
+        }
+    }
+
+    // 1. SADD adds members, SMEMBERS returns them
+    #[tokio::test]
+    async fn test_sadd_smembers() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let smembers = SMembersCommand::new(store.clone());
+
+        // SADD myset a b c
+        let result = sadd
+            .execute(vec![bulk("myset"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(3));
+
+        // SMEMBERS myset
+        let result = smembers.execute(vec![bulk("myset")]).await.unwrap();
+        let members = extract_members(&result);
+        assert_eq!(members, vec!["a", "b", "c"]);
+    }
+
+    // 2. SADD returns count of newly added only (duplicates ignored)
+    #[tokio::test]
+    async fn test_sadd_duplicates() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+
+        // Add a, b
+        let result = sadd
+            .execute(vec![bulk("myset"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(2));
+
+        // Add b, c -- b is duplicate
+        let result = sadd
+            .execute(vec![bulk("myset"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+    }
+
+    // 3. SISMEMBER returns 1 for existing member, 0 for non-existing
+    #[tokio::test]
+    async fn test_sismember() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sismember = SIsMemberCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+
+        let result = sismember
+            .execute(vec![bulk("myset"), bulk("a")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        let result = sismember
+            .execute(vec![bulk("myset"), bulk("z")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+
+        // Non-existing key
+        let result = sismember
+            .execute(vec![bulk("nokey"), bulk("a")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+    }
+
+    // 4. SMISMEMBER returns array of 1/0 for each member
+    #[tokio::test]
+    async fn test_smismember() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let smismember = SMisMemberCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        let result = smismember
+            .execute(vec![bulk("myset"), bulk("a"), bulk("z"), bulk("b")])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            RespValue::Array(Some(vec![
+                RespValue::Integer(1),
+                RespValue::Integer(0),
+                RespValue::Integer(1),
+            ]))
+        );
+    }
+
+    // 5. SCARD returns set size
+    #[tokio::test]
+    async fn test_scard() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let scard = SCardCommand::new(store.clone());
+
+        // Empty / non-existing key
+        let result = scard.execute(vec![bulk("myset")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        let result = scard.execute(vec![bulk("myset")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(3));
+    }
+
+    // 6. SREM removes members
+    #[tokio::test]
+    async fn test_srem() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let srem = SRemCommand::new(store.clone());
+        let scard = SCardCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        // Remove a and a non-existing member
+        let result = srem
+            .execute(vec![bulk("myset"), bulk("a"), bulk("z")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        let result = scard.execute(vec![bulk("myset")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(2));
+
+        // Remove from non-existing key
+        let result = srem.execute(vec![bulk("nokey"), bulk("x")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+    }
+
+    // 7. SPOP removes and returns member(s)
+    #[tokio::test]
+    async fn test_spop() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let spop = SPopCommand::new(store.clone());
+        let scard = SCardCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        // SPOP without count -- returns a single BulkString
+        let result = spop.execute(vec![bulk("myset")]).await.unwrap();
+        match &result {
+            RespValue::BulkString(Some(_)) => {} // OK, random element
+            other => panic!("expected BulkString, got {:?}", other),
+        }
+
+        let result = scard.execute(vec![bulk("myset")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(2));
+
+        // SPOP with count
+        let result = spop.execute(vec![bulk("myset"), bulk("2")]).await.unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => assert_eq!(arr.len(), 2),
+            other => panic!("expected Array, got {:?}", other),
+        }
+
+        let result = scard.execute(vec![bulk("myset")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+
+        // SPOP on non-existing key (no count) returns nil bulk string
+        let result = spop.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(result, RespValue::BulkString(None));
+    }
+
+    // 8. SRANDMEMBER with positive count returns unique elements
+    #[tokio::test]
+    async fn test_srandmember_positive() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let srandmember = SRandMemberCommand::new(store.clone());
+
+        sadd.execute(vec![
+            bulk("myset"),
+            bulk("a"),
+            bulk("b"),
+            bulk("c"),
+            bulk("d"),
+            bulk("e"),
+        ])
+        .await
+        .unwrap();
+
+        // Positive count less than set size -- returns that many unique elements
+        let result = srandmember
+            .execute(vec![bulk("myset"), bulk("3")])
+            .await
+            .unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 3);
+                // All should be unique
+                let members = extract_members(&result);
+                let unique: HashSet<String> = members.into_iter().collect();
+                assert_eq!(unique.len(), 3);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+
+        // Positive count greater than set size -- returns all elements
+        let result = srandmember
+            .execute(vec![bulk("myset"), bulk("100")])
+            .await
+            .unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => assert_eq!(arr.len(), 5),
+            other => panic!("expected Array, got {:?}", other),
+        }
+
+        // Without count -- returns a single BulkString
+        let result = srandmember.execute(vec![bulk("myset")]).await.unwrap();
+        match &result {
+            RespValue::BulkString(Some(_)) => {}
+            other => panic!("expected BulkString, got {:?}", other),
+        }
+    }
+
+    // 9. SMOVE between sets
+    #[tokio::test]
+    async fn test_smove() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let smove = SMoveCommand::new(store.clone());
+        let smembers = SMembersCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("src"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("dst"), bulk("x")]).await.unwrap();
+
+        // Move "b" from src to dst
+        let result = smove
+            .execute(vec![bulk("src"), bulk("dst"), bulk("b")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        let src_members = extract_members(&smembers.execute(vec![bulk("src")]).await.unwrap());
+        assert_eq!(src_members, vec!["a", "c"]);
+
+        let dst_members = extract_members(&smembers.execute(vec![bulk("dst")]).await.unwrap());
+        assert_eq!(dst_members, vec!["b", "x"]);
+
+        // Move non-existing member
+        let result = smove
+            .execute(vec![bulk("src"), bulk("dst"), bulk("z")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+    }
+
+    // 10. SINTER of two sets
+    #[tokio::test]
+    async fn test_sinter() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sinter = SInterCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+
+        let result = sinter.execute(vec![bulk("s1"), bulk("s2")]).await.unwrap();
+        let members = extract_members(&result);
+        assert_eq!(members, vec!["b", "c"]);
+
+        // Intersection with non-existing key yields empty
+        let result = sinter
+            .execute(vec![bulk("s1"), bulk("nokey")])
+            .await
+            .unwrap();
+        let members = extract_members(&result);
+        assert!(members.is_empty());
+    }
+
+    // 11. SUNION of two sets
+    #[tokio::test]
+    async fn test_sunion() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sunion = SUnionCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        let result = sunion.execute(vec![bulk("s1"), bulk("s2")]).await.unwrap();
+        let members = extract_members(&result);
+        assert_eq!(members, vec!["a", "b", "c"]);
+    }
+
+    // 12. SDIFF of two sets
+    #[tokio::test]
+    async fn test_sdiff() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sdiff = SDiffCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+
+        let result = sdiff.execute(vec![bulk("s1"), bulk("s2")]).await.unwrap();
+        let members = extract_members(&result);
+        assert_eq!(members, vec!["a"]);
+    }
+
+    // 13. SINTERSTORE stores result
+    #[tokio::test]
+    async fn test_sinterstore() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sinterstore = SInterStoreCommand::new(store.clone());
+        let smembers = SMembersCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+
+        let result = sinterstore
+            .execute(vec![bulk("dest"), bulk("s1"), bulk("s2")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(2));
+
+        let members = extract_members(&smembers.execute(vec![bulk("dest")]).await.unwrap());
+        assert_eq!(members, vec!["b", "c"]);
+    }
+
+    // 14. SUNIONSTORE stores result
+    #[tokio::test]
+    async fn test_sunionstore() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sunionstore = SUnionStoreCommand::new(store.clone());
+        let smembers = SMembersCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        let result = sunionstore
+            .execute(vec![bulk("dest"), bulk("s1"), bulk("s2")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(3));
+
+        let members = extract_members(&smembers.execute(vec![bulk("dest")]).await.unwrap());
+        assert_eq!(members, vec!["a", "b", "c"]);
+    }
+
+    // 15. SDIFFSTORE stores result
+    #[tokio::test]
+    async fn test_sdiffstore() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sdiffstore = SDiffStoreCommand::new(store.clone());
+        let smembers = SMembersCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+
+        let result = sdiffstore
+            .execute(vec![bulk("dest"), bulk("s1"), bulk("s2")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        let members = extract_members(&smembers.execute(vec![bulk("dest")]).await.unwrap());
+        assert_eq!(members, vec!["a"]);
+    }
+
+    // 16. SSCAN basic iteration
+    #[tokio::test]
+    async fn test_sscan() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sscan = SScanCommand::new(store.clone());
+
+        sadd.execute(vec![
+            bulk("myset"),
+            bulk("apple"),
+            bulk("banana"),
+            bulk("cherry"),
+        ])
+        .await
+        .unwrap();
+
+        // SSCAN myset 0 -- should return cursor and members
+        let result = sscan.execute(vec![bulk("myset"), bulk("0")]).await.unwrap();
+
+        match &result {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 2);
+                // First element is cursor (BulkString)
+                match &arr[0] {
+                    RespValue::BulkString(Some(_)) => {}
+                    other => panic!("expected BulkString cursor, got {:?}", other),
+                }
+                // Second element is array of members
+                match &arr[1] {
+                    RespValue::Array(Some(members)) => {
+                        assert_eq!(members.len(), 3);
+                    }
+                    other => panic!("expected Array of members, got {:?}", other),
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+
+        // SSCAN on non-existing key returns cursor 0 and empty array
+        let result = sscan.execute(vec![bulk("nokey"), bulk("0")]).await.unwrap();
+        assert_eq!(
+            result,
+            RespValue::Array(Some(vec![
+                RespValue::BulkString(Some(b"0".to_vec())),
+                RespValue::Array(Some(vec![])),
+            ]))
+        );
+    }
+
+    // 17. SINTERCARD with LIMIT
+    #[tokio::test]
+    async fn test_sintercard() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sintercard = SInterCardCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+
+        // SINTERCARD 2 s1 s2 -- intersection is {b, c}, cardinality = 2
+        let result = sintercard
+            .execute(vec![bulk("2"), bulk("s1"), bulk("s2")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(2));
+
+        // SINTERCARD 2 s1 s2 LIMIT 1 -- limited to 1
+        let result = sintercard
+            .execute(vec![
+                bulk("2"),
+                bulk("s1"),
+                bulk("s2"),
+                bulk("LIMIT"),
+                bulk("1"),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        // SINTERCARD with disjoint sets
+        sadd.execute(vec![bulk("s3"), bulk("x"), bulk("y")])
+            .await
+            .unwrap();
+        let result = sintercard
+            .execute(vec![bulk("2"), bulk("s1"), bulk("s3")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+    }
+}

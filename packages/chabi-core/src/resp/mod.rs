@@ -306,4 +306,133 @@ mod tests {
         let result = parser.decode(&mut buf).unwrap();
         assert_eq!(result, Some(RespValue::Array(None)));
     }
+
+    #[test]
+    fn test_encode_simple_string() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::new();
+        parser
+            .encode(RespValue::SimpleString("OK".to_string()), &mut buf)
+            .unwrap();
+        assert_eq!(&buf[..], b"+OK\r\n");
+    }
+
+    #[test]
+    fn test_encode_error() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::new();
+        parser
+            .encode(RespValue::Error("ERR something".to_string()), &mut buf)
+            .unwrap();
+        assert_eq!(&buf[..], b"-ERR something\r\n");
+    }
+
+    #[test]
+    fn test_encode_integer() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::new();
+        parser.encode(RespValue::Integer(42), &mut buf).unwrap();
+        assert_eq!(&buf[..], b":42\r\n");
+    }
+
+    #[test]
+    fn test_encode_bulk_string() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::new();
+        parser
+            .encode(RespValue::BulkString(Some(b"hello".to_vec())), &mut buf)
+            .unwrap();
+        assert_eq!(&buf[..], b"$5\r\nhello\r\n");
+    }
+
+    #[test]
+    fn test_encode_null_bulk_string() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::new();
+        parser
+            .encode(RespValue::BulkString(None), &mut buf)
+            .unwrap();
+        assert_eq!(&buf[..], b"$-1\r\n");
+    }
+
+    #[test]
+    fn test_encode_array() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::new();
+        parser
+            .encode(
+                RespValue::Array(Some(vec![RespValue::Integer(1), RespValue::Integer(2)])),
+                &mut buf,
+            )
+            .unwrap();
+        assert_eq!(&buf[..], b"*2\r\n:1\r\n:2\r\n");
+    }
+
+    #[test]
+    fn test_encode_null_array() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::new();
+        parser.encode(RespValue::Array(None), &mut buf).unwrap();
+        assert_eq!(&buf[..], b"*-1\r\n");
+    }
+
+    #[test]
+    fn test_serialize_display() {
+        let val = RespValue::SimpleString("OK".to_string());
+        assert_eq!(val.serialize(), b"+OK\r\n");
+        let val = RespValue::Integer(100);
+        assert_eq!(val.serialize(), b":100\r\n");
+    }
+
+    #[test]
+    fn test_parse_static_method() {
+        let val = RespValue::parse(b"+OK\r\n").unwrap();
+        assert_eq!(val, RespValue::SimpleString("OK".to_string()));
+    }
+
+    #[test]
+    fn test_parse_incomplete() {
+        let result = RespValue::parse(b"+OK");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_empty() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::new();
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_invalid_format() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::from("!invalid\r\n".as_bytes());
+        let result = parser.decode(&mut buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_negative_integer() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::from(":-100\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, Some(RespValue::Integer(-100)));
+    }
+
+    #[test]
+    fn test_encode_nested_array() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::new();
+        parser
+            .encode(
+                RespValue::Array(Some(vec![
+                    RespValue::Array(Some(vec![RespValue::Integer(1)])),
+                    RespValue::BulkString(Some(b"hi".to_vec())),
+                ])),
+                &mut buf,
+            )
+            .unwrap();
+        assert_eq!(&buf[..], b"*2\r\n*1\r\n:1\r\n$2\r\nhi\r\n");
+    }
 }
