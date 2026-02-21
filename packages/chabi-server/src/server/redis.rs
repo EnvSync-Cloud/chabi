@@ -1,16 +1,17 @@
+use chabi_core::commands::sorted_set::SortedSet;
 use chabi_core::commands::CommandHandler;
 use chabi_core::resp::{RespParser, RespValue};
+use chabi_core::storage::{DataStore, Snapshot};
 use chabi_core::Result;
 use chabi_core::RwLock;
 use futures::{SinkExt, StreamExt};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -20,331 +21,581 @@ use tokio_util::codec::Framed;
 type PubSubChannels =
     std::sync::RwLock<HashMap<String, Vec<(usize, mpsc::Sender<(String, String)>)>>>;
 
-// Type aliases to reduce type complexity in spawn_blocking closure and error mapping
-type SnapshotParts = (
-    HashMap<String, String>,
-    HashMap<String, Vec<String>>,
-    HashMap<String, HashSet<String>>,
-    HashMap<String, HashMap<String, String>>,
-    HashMap<String, u64>,
-);
 type BoxedError = Box<dyn std::error::Error + Send + Sync>;
-type SnapshotLoadResult = std::result::Result<SnapshotParts, BoxedError>;
 
 // redb table definitions
 const T_STRINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("strings");
 const T_LISTS: TableDefinition<&str, &[u8]> = TableDefinition::new("lists");
 const T_SETS: TableDefinition<&str, &[u8]> = TableDefinition::new("sets");
 const T_HASHES: TableDefinition<&str, &[u8]> = TableDefinition::new("hashes");
+const T_SORTED_SETS: TableDefinition<&str, &[u8]> = TableDefinition::new("sorted_sets");
+const T_HLL: TableDefinition<&str, &[u8]> = TableDefinition::new("hll");
 const T_EXPIRATIONS: TableDefinition<&str, u64> = TableDefinition::new("expirations");
 
 static NEXT_CONN_ID: AtomicUsize = AtomicUsize::new(1);
 
 pub struct RedisServer {
     command_registry: Arc<HashMap<String, Box<dyn CommandHandler + Send + Sync>>>,
-    // PubSub channels shared with Publish/PubSub commands
     pubsub_channels: Arc<PubSubChannels>,
-    // Backing stores for snapshotting
-    string_store: Arc<RwLock<HashMap<String, String>>>,
-    list_store: Arc<RwLock<HashMap<String, Vec<String>>>>,
-    set_store: Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    hash_store: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
-    expirations: Arc<RwLock<HashMap<String, Instant>>>,
-    // Directory path where chabi.kdb resides
+    store: DataStore,
     snapshot_dir: Arc<RwLock<Option<String>>>,
-    // Metrics counters
     total_connections_served: Arc<AtomicUsize>,
     total_commands_processed: Arc<AtomicUsize>,
     connected_clients: Arc<AtomicUsize>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub(crate) struct Snapshot {
-    strings: HashMap<String, String>,
-    lists: HashMap<String, Vec<String>>,
-    sets: HashMap<String, HashSet<String>>,
-    hashes: HashMap<String, HashMap<String, String>>,
-    expirations_epoch_secs: HashMap<String, u64>,
 }
 
 impl RedisServer {
     pub fn new() -> Self {
         let mut command_registry = HashMap::new();
 
-        // Initialize stores (async RwLock-backed)
-        let string_store: Arc<RwLock<HashMap<String, String>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let list_store: Arc<RwLock<HashMap<String, Vec<String>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let set_store: Arc<RwLock<HashMap<String, HashSet<String>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let hash_store: Arc<RwLock<HashMap<String, HashMap<String, String>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let expirations: Arc<RwLock<HashMap<String, Instant>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+        let store = DataStore::new();
         let snapshot_dir: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
 
         // channel -> Vec<(conn_id, Sender<(channel, message)>)>
         let pubsub_channels: Arc<PubSubChannels> = Arc::new(std::sync::RwLock::new(HashMap::new()));
 
-        // Connection commands
-        command_registry.insert(
-            "PING".to_string(),
-            Box::new(chabi_core::commands::connection::PingCommand::new())
-                as Box<dyn CommandHandler + Send + Sync>,
+        // Helper macro to reduce boilerplate
+        macro_rules! reg {
+            ($name:expr, $cmd:expr) => {
+                command_registry.insert(
+                    $name.to_string(),
+                    Box::new($cmd) as Box<dyn CommandHandler + Send + Sync>,
+                );
+            };
+        }
+
+        // --- Connection commands ---
+        reg!("PING", chabi_core::commands::connection::PingCommand::new());
+        reg!("ECHO", chabi_core::commands::connection::EchoCommand::new());
+        reg!(
+            "SELECT",
+            chabi_core::commands::connection::SelectCommand::new()
         );
-        command_registry.insert(
-            "ECHO".to_string(),
-            Box::new(chabi_core::commands::connection::EchoCommand::new())
-                as Box<dyn CommandHandler + Send + Sync>,
+        reg!("QUIT", chabi_core::commands::connection::QuitCommand::new());
+        reg!(
+            "RESET",
+            chabi_core::commands::connection::ResetCommand::new()
+        );
+        reg!("AUTH", chabi_core::commands::connection::AuthCommand::new());
+        reg!(
+            "CLIENT",
+            chabi_core::commands::connection::ClientCommand::new()
+        );
+        reg!(
+            "HELLO",
+            chabi_core::commands::connection::HelloCommand::new()
         );
 
-        // Register string commands
-        command_registry.insert(
-            "SET".to_string(),
-            Box::new(chabi_core::commands::string::SetCommand::new(Arc::clone(
-                &string_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        // --- String commands ---
+        reg!(
+            "SET",
+            chabi_core::commands::string::SetCommand::new(store.clone())
         );
-        command_registry.insert(
-            "GET".to_string(),
-            Box::new(chabi_core::commands::string::GetCommand::new(Arc::clone(
-                &string_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "GET",
+            chabi_core::commands::string::GetCommand::new(store.clone())
         );
-        command_registry.insert(
-            "DEL".to_string(),
-            Box::new(chabi_core::commands::string::DelCommand::new(Arc::clone(
-                &string_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "DEL",
+            chabi_core::commands::string::DelCommand::new(store.clone())
         );
-        command_registry.insert(
-            "EXISTS".to_string(),
-            Box::new(chabi_core::commands::string::ExistsCommand::new(
-                Arc::clone(&string_store),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "EXISTS",
+            chabi_core::commands::string::ExistsCommand::new(store.clone())
         );
-        command_registry.insert(
-            "APPEND".to_string(),
-            Box::new(chabi_core::commands::string::AppendCommand::new(
-                Arc::clone(&string_store),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "APPEND",
+            chabi_core::commands::string::AppendCommand::new(store.clone())
         );
-        command_registry.insert(
-            "STRLEN".to_string(),
-            Box::new(chabi_core::commands::string::StrlenCommand::new(
-                Arc::clone(&string_store),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "STRLEN",
+            chabi_core::commands::string::StrlenCommand::new(store.clone())
         );
-
-        // Register list commands
-        command_registry.insert(
-            "LPUSH".to_string(),
-            Box::new(chabi_core::commands::list::LPushCommand::new(Arc::clone(
-                &list_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "INCR",
+            chabi_core::commands::string::IncrCommand::new(store.clone())
         );
-        command_registry.insert(
-            "RPUSH".to_string(),
-            Box::new(chabi_core::commands::list::RPushCommand::new(Arc::clone(
-                &list_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "DECR",
+            chabi_core::commands::string::DecrCommand::new(store.clone())
         );
-        command_registry.insert(
-            "LPOP".to_string(),
-            Box::new(chabi_core::commands::list::LPopCommand::new(Arc::clone(
-                &list_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "INCRBY",
+            chabi_core::commands::string::IncrByCommand::new(store.clone())
         );
-        command_registry.insert(
-            "RPOP".to_string(),
-            Box::new(chabi_core::commands::list::RPopCommand::new(Arc::clone(
-                &list_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "DECRBY",
+            chabi_core::commands::string::DecrByCommand::new(store.clone())
         );
-        command_registry.insert(
-            "LRANGE".to_string(),
-            Box::new(chabi_core::commands::list::LRangeCommand::new(Arc::clone(
-                &list_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "INCRBYFLOAT",
+            chabi_core::commands::string::IncrByFloatCommand::new(store.clone())
         );
-        command_registry.insert(
-            "LLEN".to_string(),
-            Box::new(chabi_core::commands::list::LLenCommand::new(Arc::clone(
-                &list_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "MGET",
+            chabi_core::commands::string::MGetCommand::new(store.clone())
         );
-
-        // Register set commands
-        command_registry.insert(
-            "SADD".to_string(),
-            Box::new(chabi_core::commands::set::SAddCommand::new(Arc::clone(
-                &set_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "MSET",
+            chabi_core::commands::string::MSetCommand::new(store.clone())
         );
-        command_registry.insert(
-            "SMEMBERS".to_string(),
-            Box::new(chabi_core::commands::set::SMembersCommand::new(Arc::clone(
-                &set_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "MSETNX",
+            chabi_core::commands::string::MSetNxCommand::new(store.clone())
         );
-        command_registry.insert(
-            "SISMEMBER".to_string(),
-            Box::new(chabi_core::commands::set::SIsMemberCommand::new(
-                Arc::clone(&set_store),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "SETNX",
+            chabi_core::commands::string::SetNxCommand::new(store.clone())
         );
-        command_registry.insert(
-            "SCARD".to_string(),
-            Box::new(chabi_core::commands::set::SCardCommand::new(Arc::clone(
-                &set_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "SETEX",
+            chabi_core::commands::string::SetExCommand::new(store.clone())
         );
-        command_registry.insert(
-            "SREM".to_string(),
-            Box::new(chabi_core::commands::set::SRemCommand::new(Arc::clone(
-                &set_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "PSETEX",
+            chabi_core::commands::string::PSetExCommand::new(store.clone())
+        );
+        reg!(
+            "GETRANGE",
+            chabi_core::commands::string::GetRangeCommand::new(store.clone())
+        );
+        reg!(
+            "SETRANGE",
+            chabi_core::commands::string::SetRangeCommand::new(store.clone())
+        );
+        reg!(
+            "GETDEL",
+            chabi_core::commands::string::GetDelCommand::new(store.clone())
+        );
+        reg!(
+            "GETEX",
+            chabi_core::commands::string::GetExCommand::new(store.clone())
         );
 
-        // Register hash commands
-        command_registry.insert(
-            "HSET".to_string(),
-            Box::new(chabi_core::commands::hash::HSetCommand::new(Arc::clone(
-                &hash_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        // --- Key commands ---
+        reg!(
+            "KEYS",
+            chabi_core::commands::key::KeysCommand::new(store.clone())
         );
-        command_registry.insert(
-            "HGET".to_string(),
-            Box::new(chabi_core::commands::hash::HGetCommand::new(Arc::clone(
-                &hash_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "TTL",
+            chabi_core::commands::key::TTLCommand::new(store.clone())
         );
-        command_registry.insert(
-            "HGETALL".to_string(),
-            Box::new(chabi_core::commands::hash::HGetAllCommand::new(Arc::clone(
-                &hash_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "PTTL",
+            chabi_core::commands::key::PTTLCommand::new(store.clone())
         );
-        command_registry.insert(
-            "HEXISTS".to_string(),
-            Box::new(chabi_core::commands::hash::HExistsCommand::new(Arc::clone(
-                &hash_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "EXPIRE",
+            chabi_core::commands::key::ExpireCommand::new(store.clone())
         );
-        command_registry.insert(
-            "HDEL".to_string(),
-            Box::new(chabi_core::commands::hash::HDelCommand::new(Arc::clone(
-                &hash_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "PEXPIRE",
+            chabi_core::commands::key::PExpireCommand::new(store.clone())
         );
-        command_registry.insert(
-            "HLEN".to_string(),
-            Box::new(chabi_core::commands::hash::HLenCommand::new(Arc::clone(
-                &hash_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "EXPIREAT",
+            chabi_core::commands::key::ExpireAtCommand::new(store.clone())
         );
-        command_registry.insert(
-            "HKEYS".to_string(),
-            Box::new(chabi_core::commands::hash::HKeysCommand::new(Arc::clone(
-                &hash_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "PEXPIREAT",
+            chabi_core::commands::key::PExpireAtCommand::new(store.clone())
         );
-        command_registry.insert(
-            "HVALS".to_string(),
-            Box::new(chabi_core::commands::hash::HValsCommand::new(Arc::clone(
-                &hash_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "RENAME",
+            chabi_core::commands::key::RenameCommand::new(store.clone())
+        );
+        reg!(
+            "RENAMENX",
+            chabi_core::commands::key::RenameNxCommand::new(store.clone())
+        );
+        reg!(
+            "TYPE",
+            chabi_core::commands::key::TypeCommand::new(store.clone())
+        );
+        reg!(
+            "PERSIST",
+            chabi_core::commands::key::PersistCommand::new(store.clone())
+        );
+        reg!(
+            "UNLINK",
+            chabi_core::commands::key::UnlinkCommand::new(store.clone())
+        );
+        reg!(
+            "RANDOMKEY",
+            chabi_core::commands::key::RandomKeyCommand::new(store.clone())
+        );
+        reg!(
+            "SCAN",
+            chabi_core::commands::key::ScanCommand::new(store.clone())
+        );
+        reg!(
+            "COPY",
+            chabi_core::commands::key::CopyCommand::new(store.clone())
+        );
+        reg!(
+            "TOUCH",
+            chabi_core::commands::key::TouchCommand::new(store.clone())
+        );
+        reg!("OBJECT", chabi_core::commands::key::ObjectCommand::new());
+
+        // --- List commands ---
+        reg!(
+            "LPUSH",
+            chabi_core::commands::list::LPushCommand::new(store.clone())
+        );
+        reg!(
+            "RPUSH",
+            chabi_core::commands::list::RPushCommand::new(store.clone())
+        );
+        reg!(
+            "LPOP",
+            chabi_core::commands::list::LPopCommand::new(store.clone())
+        );
+        reg!(
+            "RPOP",
+            chabi_core::commands::list::RPopCommand::new(store.clone())
+        );
+        reg!(
+            "LRANGE",
+            chabi_core::commands::list::LRangeCommand::new(store.clone())
+        );
+        reg!(
+            "LLEN",
+            chabi_core::commands::list::LLenCommand::new(store.clone())
+        );
+        reg!(
+            "LINDEX",
+            chabi_core::commands::list::LIndexCommand::new(store.clone())
+        );
+        reg!(
+            "LSET",
+            chabi_core::commands::list::LSetCommand::new(store.clone())
+        );
+        reg!(
+            "LTRIM",
+            chabi_core::commands::list::LTrimCommand::new(store.clone())
+        );
+        reg!(
+            "LINSERT",
+            chabi_core::commands::list::LInsertCommand::new(store.clone())
+        );
+        reg!(
+            "LREM",
+            chabi_core::commands::list::LRemCommand::new(store.clone())
+        );
+        reg!(
+            "LPOS",
+            chabi_core::commands::list::LPosCommand::new(store.clone())
+        );
+        reg!(
+            "LPUSHX",
+            chabi_core::commands::list::LPushXCommand::new(store.clone())
+        );
+        reg!(
+            "RPUSHX",
+            chabi_core::commands::list::RPushXCommand::new(store.clone())
+        );
+        reg!(
+            "LMOVE",
+            chabi_core::commands::list::LMoveCommand::new(store.clone())
         );
 
-        // Key commands (use async RwLock-backed store same as string)
-        command_registry.insert(
-            "KEYS".to_string(),
-            Box::new(chabi_core::commands::key::KeysCommand::new(Arc::clone(
-                &string_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        // --- Set commands ---
+        reg!(
+            "SADD",
+            chabi_core::commands::set::SAddCommand::new(store.clone())
         );
-        command_registry.insert(
-            "TTL".to_string(),
-            Box::new(chabi_core::commands::key::TTLCommand::new(
-                Arc::clone(&string_store),
-                Arc::clone(&expirations),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "SMEMBERS",
+            chabi_core::commands::set::SMembersCommand::new(store.clone())
         );
-        command_registry.insert(
-            "EXPIRE".to_string(),
-            Box::new(chabi_core::commands::key::ExpireCommand::new(
-                Arc::clone(&string_store),
-                Arc::clone(&expirations),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "SISMEMBER",
+            chabi_core::commands::set::SIsMemberCommand::new(store.clone())
         );
-        command_registry.insert(
-            "RENAME".to_string(),
-            Box::new(chabi_core::commands::key::RenameCommand::new(
-                Arc::clone(&string_store),
-                Arc::clone(&expirations),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "SCARD",
+            chabi_core::commands::set::SCardCommand::new(store.clone())
         );
-        command_registry.insert(
-            "TYPE".to_string(),
-            Box::new(chabi_core::commands::key::TypeCommand::new(Arc::clone(
-                &string_store,
-            ))) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "SREM",
+            chabi_core::commands::set::SRemCommand::new(store.clone())
+        );
+        reg!(
+            "SPOP",
+            chabi_core::commands::set::SPopCommand::new(store.clone())
+        );
+        reg!(
+            "SRANDMEMBER",
+            chabi_core::commands::set::SRandMemberCommand::new(store.clone())
+        );
+        reg!(
+            "SMOVE",
+            chabi_core::commands::set::SMoveCommand::new(store.clone())
+        );
+        reg!(
+            "SINTER",
+            chabi_core::commands::set::SInterCommand::new(store.clone())
+        );
+        reg!(
+            "SUNION",
+            chabi_core::commands::set::SUnionCommand::new(store.clone())
+        );
+        reg!(
+            "SDIFF",
+            chabi_core::commands::set::SDiffCommand::new(store.clone())
+        );
+        reg!(
+            "SINTERSTORE",
+            chabi_core::commands::set::SInterStoreCommand::new(store.clone())
+        );
+        reg!(
+            "SUNIONSTORE",
+            chabi_core::commands::set::SUnionStoreCommand::new(store.clone())
+        );
+        reg!(
+            "SDIFFSTORE",
+            chabi_core::commands::set::SDiffStoreCommand::new(store.clone())
+        );
+        reg!(
+            "SSCAN",
+            chabi_core::commands::set::SScanCommand::new(store.clone())
+        );
+        reg!(
+            "SMISMEMBER",
+            chabi_core::commands::set::SMisMemberCommand::new(store.clone())
+        );
+        reg!(
+            "SINTERCARD",
+            chabi_core::commands::set::SInterCardCommand::new(store.clone())
         );
 
-        // Server commands (INFO, SAVE) - use async RwLock-backed stores
-        command_registry.insert(
-            "INFO".to_string(),
-            Box::new(chabi_core::commands::server::InfoCommand::new(
-                Arc::clone(&string_store),
-                Arc::clone(&hash_store),
-                Arc::clone(&list_store),
-                Arc::clone(&set_store),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        // --- Hash commands ---
+        reg!(
+            "HSET",
+            chabi_core::commands::hash::HSetCommand::new(store.clone())
         );
-        command_registry.insert(
-            "SAVE".to_string(),
-            Box::new(chabi_core::commands::server::SaveCommand::new(
-                Arc::clone(&string_store),
-                Arc::clone(&hash_store),
-                Arc::clone(&list_store),
-                Arc::clone(&set_store),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        // HMSET is an alias for HSET
+        reg!(
+            "HMSET",
+            chabi_core::commands::hash::HSetCommand::new(store.clone())
+        );
+        reg!(
+            "HGET",
+            chabi_core::commands::hash::HGetCommand::new(store.clone())
+        );
+        reg!(
+            "HGETALL",
+            chabi_core::commands::hash::HGetAllCommand::new(store.clone())
+        );
+        reg!(
+            "HEXISTS",
+            chabi_core::commands::hash::HExistsCommand::new(store.clone())
+        );
+        reg!(
+            "HDEL",
+            chabi_core::commands::hash::HDelCommand::new(store.clone())
+        );
+        reg!(
+            "HLEN",
+            chabi_core::commands::hash::HLenCommand::new(store.clone())
+        );
+        reg!(
+            "HKEYS",
+            chabi_core::commands::hash::HKeysCommand::new(store.clone())
+        );
+        reg!(
+            "HVALS",
+            chabi_core::commands::hash::HValsCommand::new(store.clone())
+        );
+        reg!(
+            "HMGET",
+            chabi_core::commands::hash::HMGetCommand::new(store.clone())
+        );
+        reg!(
+            "HINCRBY",
+            chabi_core::commands::hash::HIncrByCommand::new(store.clone())
+        );
+        reg!(
+            "HINCRBYFLOAT",
+            chabi_core::commands::hash::HIncrByFloatCommand::new(store.clone())
+        );
+        reg!(
+            "HSETNX",
+            chabi_core::commands::hash::HSetNxCommand::new(store.clone())
+        );
+        reg!(
+            "HSTRLEN",
+            chabi_core::commands::hash::HStrLenCommand::new(store.clone())
+        );
+        reg!(
+            "HSCAN",
+            chabi_core::commands::hash::HScanCommand::new(store.clone())
+        );
+        reg!(
+            "HRANDFIELD",
+            chabi_core::commands::hash::HRandFieldCommand::new(store.clone())
         );
 
-        command_registry.insert(
-            "PUBLISH".to_string(),
-            Box::new(chabi_core::commands::pubsub::PublishCommand::new(
-                Arc::clone(&pubsub_channels),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        // --- Sorted set commands ---
+        reg!(
+            "ZADD",
+            chabi_core::commands::sorted_set::ZAddCommand::new(store.clone())
         );
-        command_registry.insert(
-            "SUBSCRIBE".to_string(),
-            Box::new(chabi_core::commands::pubsub::SubscribeCommand::new(
-                Arc::clone(&pubsub_channels),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "ZREM",
+            chabi_core::commands::sorted_set::ZRemCommand::new(store.clone())
         );
-        command_registry.insert(
-            "UNSUBSCRIBE".to_string(),
-            Box::new(chabi_core::commands::pubsub::UnsubscribeCommand::new(
-                Arc::clone(&pubsub_channels),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "ZSCORE",
+            chabi_core::commands::sorted_set::ZScoreCommand::new(store.clone())
         );
-        command_registry.insert(
-            "PUBSUB".to_string(),
-            Box::new(chabi_core::commands::pubsub::PubSubCommand::new(
-                Arc::clone(&pubsub_channels),
-            )) as Box<dyn CommandHandler + Send + Sync>,
+        reg!(
+            "ZCARD",
+            chabi_core::commands::sorted_set::ZCardCommand::new(store.clone())
+        );
+        reg!(
+            "ZCOUNT",
+            chabi_core::commands::sorted_set::ZCountCommand::new(store.clone())
+        );
+        reg!(
+            "ZRANGE",
+            chabi_core::commands::sorted_set::ZRangeCommand::new(store.clone())
+        );
+        reg!(
+            "ZREVRANGE",
+            chabi_core::commands::sorted_set::ZRevRangeCommand::new(store.clone())
+        );
+        reg!(
+            "ZRANGEBYSCORE",
+            chabi_core::commands::sorted_set::ZRangeByScoreCommand::new(store.clone())
+        );
+        reg!(
+            "ZREVRANGEBYSCORE",
+            chabi_core::commands::sorted_set::ZRevRangeByScoreCommand::new(store.clone())
+        );
+        reg!(
+            "ZRANK",
+            chabi_core::commands::sorted_set::ZRankCommand::new(store.clone())
+        );
+        reg!(
+            "ZREVRANK",
+            chabi_core::commands::sorted_set::ZRevRankCommand::new(store.clone())
+        );
+        reg!(
+            "ZINCRBY",
+            chabi_core::commands::sorted_set::ZIncrByCommand::new(store.clone())
+        );
+        reg!(
+            "ZPOPMIN",
+            chabi_core::commands::sorted_set::ZPopMinCommand::new(store.clone())
+        );
+        reg!(
+            "ZPOPMAX",
+            chabi_core::commands::sorted_set::ZPopMaxCommand::new(store.clone())
+        );
+        reg!(
+            "ZRANDMEMBER",
+            chabi_core::commands::sorted_set::ZRandMemberCommand::new(store.clone())
+        );
+        reg!(
+            "ZMSCORE",
+            chabi_core::commands::sorted_set::ZMScoreCommand::new(store.clone())
+        );
+        reg!(
+            "ZUNIONSTORE",
+            chabi_core::commands::sorted_set::ZUnionStoreCommand::new(store.clone())
+        );
+        reg!(
+            "ZINTERSTORE",
+            chabi_core::commands::sorted_set::ZInterStoreCommand::new(store.clone())
+        );
+        reg!(
+            "ZSCAN",
+            chabi_core::commands::sorted_set::ZScanCommand::new(store.clone())
+        );
+
+        // --- Bitmap commands ---
+        reg!(
+            "SETBIT",
+            chabi_core::commands::bitmap::SetBitCommand::new(store.clone())
+        );
+        reg!(
+            "GETBIT",
+            chabi_core::commands::bitmap::GetBitCommand::new(store.clone())
+        );
+        reg!(
+            "BITCOUNT",
+            chabi_core::commands::bitmap::BitCountCommand::new(store.clone())
+        );
+        reg!(
+            "BITPOS",
+            chabi_core::commands::bitmap::BitPosCommand::new(store.clone())
+        );
+
+        // --- HyperLogLog commands ---
+        reg!(
+            "PFADD",
+            chabi_core::commands::hyperloglog::PfAddCommand::new(store.clone())
+        );
+        reg!(
+            "PFCOUNT",
+            chabi_core::commands::hyperloglog::PfCountCommand::new(store.clone())
+        );
+        reg!(
+            "PFMERGE",
+            chabi_core::commands::hyperloglog::PfMergeCommand::new(store.clone())
+        );
+
+        // --- Server commands ---
+        reg!(
+            "INFO",
+            chabi_core::commands::server::InfoCommand::new(store.clone())
+        );
+        reg!("SAVE", chabi_core::commands::server::SaveCommand::new());
+        reg!(
+            "DBSIZE",
+            chabi_core::commands::server::DbSizeCommand::new(store.clone())
+        );
+        reg!(
+            "FLUSHDB",
+            chabi_core::commands::server::FlushDbCommand::new(store.clone())
+        );
+        reg!(
+            "FLUSHALL",
+            chabi_core::commands::server::FlushDbCommand::new(store.clone())
+        );
+        reg!("CONFIG", chabi_core::commands::server::ConfigCommand::new());
+        reg!(
+            "COMMAND",
+            chabi_core::commands::server::CommandCommand::new()
+        );
+        reg!("TIME", chabi_core::commands::server::TimeCommand::new());
+        reg!("BGSAVE", chabi_core::commands::server::BgSaveCommand::new());
+
+        // --- PubSub commands ---
+        reg!(
+            "PUBLISH",
+            chabi_core::commands::pubsub::PublishCommand::new(Arc::clone(&pubsub_channels))
+        );
+        reg!(
+            "SUBSCRIBE",
+            chabi_core::commands::pubsub::SubscribeCommand::new(Arc::clone(&pubsub_channels))
+        );
+        reg!(
+            "UNSUBSCRIBE",
+            chabi_core::commands::pubsub::UnsubscribeCommand::new(Arc::clone(&pubsub_channels))
+        );
+        reg!(
+            "PUBSUB",
+            chabi_core::commands::pubsub::PubSubCommand::new(Arc::clone(&pubsub_channels))
         );
 
         RedisServer {
             command_registry: Arc::new(command_registry),
             pubsub_channels: Arc::clone(&pubsub_channels),
-            string_store,
-            list_store,
-            set_store,
-            hash_store,
-            expirations,
+            store,
             snapshot_dir,
             total_connections_served: Arc::new(AtomicUsize::new(0)),
             total_commands_processed: Arc::new(AtomicUsize::new(0)),
@@ -362,42 +613,11 @@ impl RedisServer {
     }
 
     pub fn start_snapshot_task(&self, dir: String, interval: Duration) {
-        let strings = Arc::clone(&self.string_store);
-        let lists = Arc::clone(&self.list_store);
-        let sets = Arc::clone(&self.set_store);
-        let hashes = Arc::clone(&self.hash_store);
-        let expirations = Arc::clone(&self.expirations);
+        let store = self.store.clone();
         tokio::spawn(async move {
             loop {
                 sleep(interval).await;
-                let snapshot = {
-                    let strings_guard = strings.read().await;
-                    let lists_guard = lists.read().await;
-                    let sets_guard = sets.read().await;
-                    let hashes_guard = hashes.read().await;
-                    let expirations_guard = expirations.read().await;
-                    let now_instant = Instant::now();
-                    let now_system = SystemTime::now();
-                    let mut exps: HashMap<String, u64> = HashMap::new();
-                    for (k, inst) in expirations_guard.iter() {
-                        let delta = inst.saturating_duration_since(now_instant);
-                        let ts = now_system
-                            .checked_add(delta)
-                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                            .map(|d| d.as_secs())
-                            .unwrap_or_else(|| {
-                                UNIX_EPOCH.elapsed().map(|d| d.as_secs()).unwrap_or(0)
-                            });
-                        exps.insert(k.clone(), ts);
-                    }
-                    Snapshot {
-                        strings: strings_guard.clone(),
-                        lists: lists_guard.clone(),
-                        sets: sets_guard.clone(),
-                        hashes: hashes_guard.clone(),
-                        expirations_epoch_secs: exps,
-                    }
-                };
+                let snapshot = store.build_snapshot().await;
 
                 if let Err(e) = Self::persist_snapshot_to_dir(&dir, snapshot).await {
                     tracing::error!("snapshot persist error: {}", e);
@@ -413,11 +633,12 @@ impl RedisServer {
         let total_conns = self.total_connections_served.load(Ordering::Relaxed);
         let total_cmds = self.total_commands_processed.load(Ordering::Relaxed);
 
-        let string_count = self.string_store.read().await.len();
-        let list_count = self.list_store.read().await.len();
-        let set_count = self.set_store.read().await.len();
-        let hash_count = self.hash_store.read().await.len();
-        let expiration_count = self.expirations.read().await.len();
+        let string_count = self.store.strings.read().await.len();
+        let list_count = self.store.lists.read().await.len();
+        let set_count = self.store.sets.read().await.len();
+        let hash_count = self.store.hashes.read().await.len();
+        let sorted_set_count = self.store.sorted_sets.read().await.len();
+        let expiration_count = self.store.expirations.read().await.len();
         let pubsub_channels = self.pubsub_channels.read().map(|m| m.len()).unwrap_or(0);
 
         format!(
@@ -436,6 +657,7 @@ impl RedisServer {
              chabi_keys{{type=\"list\"}} {}\n\
              chabi_keys{{type=\"set\"}} {}\n\
              chabi_keys{{type=\"hash\"}} {}\n\
+             chabi_keys{{type=\"zset\"}} {}\n\
              # HELP chabi_expiring_keys Number of keys with TTL set\n\
              # TYPE chabi_expiring_keys gauge\n\
              chabi_expiring_keys {}\n\
@@ -449,37 +671,14 @@ impl RedisServer {
             list_count,
             set_count,
             hash_count,
+            sorted_set_count,
             expiration_count,
             pubsub_channels,
         )
     }
 
-    // Build a snapshot of current in-memory data
     pub async fn build_snapshot(&self) -> Snapshot {
-        let strings_guard = self.string_store.read().await;
-        let lists_guard = self.list_store.read().await;
-        let sets_guard = self.set_store.read().await;
-        let hashes_guard = self.hash_store.read().await;
-        let expirations_guard = self.expirations.read().await;
-        let now_instant = Instant::now();
-        let now_system = SystemTime::now();
-        let mut exps: HashMap<String, u64> = HashMap::new();
-        for (k, inst) in expirations_guard.iter() {
-            let delta = inst.saturating_duration_since(now_instant);
-            let ts = now_system
-                .checked_add(delta)
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or_else(|| UNIX_EPOCH.elapsed().map(|d| d.as_secs()).unwrap_or(0));
-            exps.insert(k.clone(), ts);
-        }
-        Snapshot {
-            strings: strings_guard.clone(),
-            lists: lists_guard.clone(),
-            sets: sets_guard.clone(),
-            hashes: hashes_guard.clone(),
-            expirations_epoch_secs: exps,
-        }
+        self.store.build_snapshot().await
     }
 
     pub async fn load_snapshot_from_dir(&self, dir: &str) -> Result<()> {
@@ -489,9 +688,9 @@ impl RedisServer {
             return Ok(());
         }
         // Use blocking thread for redb IO
-        let (strings, lists, sets, hashes, expirations) = tokio::task::spawn_blocking({
+        let snapshot = tokio::task::spawn_blocking({
             let db_path = db_path.clone();
-            move || -> SnapshotLoadResult {
+            move || -> std::result::Result<Snapshot, BoxedError> {
                 let db = Database::open(db_path)?;
                 let rtxn = db.begin_read()?;
 
@@ -551,69 +750,70 @@ impl RedisServer {
                     }
                 }
 
+                // Sorted Sets
+                let mut sorted_sets = HashMap::new();
+                if let Ok(table) = rtxn.open_table(T_SORTED_SETS) {
+                    for item in table.iter()? {
+                        let (k, v) = item?;
+                        let key = k.value().to_string();
+                        let val: SortedSet = bincode::serde::decode_from_slice(
+                            v.value(),
+                            bincode::config::standard(),
+                        )?
+                        .0;
+                        sorted_sets.insert(key, val);
+                    }
+                }
+
+                // HyperLogLog
+                let mut hll = HashMap::new();
+                if let Ok(table) = rtxn.open_table(T_HLL) {
+                    for item in table.iter()? {
+                        let (k, v) = item?;
+                        let key = k.value().to_string();
+                        let val = v.value().to_vec();
+                        hll.insert(key, val);
+                    }
+                }
+
                 // Expirations
-                let mut expirations = HashMap::new();
+                let mut expirations_epoch_secs = HashMap::new();
                 if let Ok(table) = rtxn.open_table(T_EXPIRATIONS) {
                     for item in table.iter()? {
                         let (k, v) = item?;
                         let key = k.value().to_string();
                         let val = v.value();
-                        expirations.insert(key, val);
+                        expirations_epoch_secs.insert(key, val);
                     }
                 }
 
-                Ok((strings, lists, sets, hashes, expirations))
+                Ok(Snapshot {
+                    strings,
+                    lists,
+                    sets,
+                    hashes,
+                    sorted_sets,
+                    hll,
+                    expirations_epoch_secs,
+                })
             }
         })
         .await
         .map_err(|e| -> BoxedError { Box::new(e) })??;
 
-        let strings_len = strings.len();
-        let lists_len = lists.len();
-        let sets_len = sets.len();
-        let hashes_len = hashes.len();
-        let expirations_len = expirations.len();
-
-        {
-            let mut s = self.string_store.write().await;
-            *s = strings;
-        }
-        {
-            let mut l = self.list_store.write().await;
-            *l = lists;
-        }
-        {
-            let mut s = self.set_store.write().await;
-            *s = sets;
-        }
-        {
-            let mut h = self.hash_store.write().await;
-            *h = hashes;
-        }
-        {
-            let mut exp = self.expirations.write().await;
-            exp.clear();
-            let now_system = SystemTime::now();
-            let now_instant = Instant::now();
-            for (k, ts) in expirations.into_iter() {
-                let target_time = UNIX_EPOCH + Duration::from_secs(ts);
-                if let Ok(delta) = target_time.duration_since(now_system) {
-                    if !delta.is_zero() {
-                        exp.insert(k, now_instant + delta);
-                    }
-                }
-            }
-        }
-
         tracing::info!(
-            "loaded snapshot from {}/chabi.kdb (strings={}, lists={}, sets={}, hashes={}, expirations={})",
+            "loaded snapshot from {}/chabi.kdb (strings={}, lists={}, sets={}, hashes={}, sorted_sets={}, hll={}, expirations={})",
             dir,
-            strings_len,
-            lists_len,
-            sets_len,
-            hashes_len,
-            expirations_len
+            snapshot.strings.len(),
+            snapshot.lists.len(),
+            snapshot.sets.len(),
+            snapshot.hashes.len(),
+            snapshot.sorted_sets.len(),
+            snapshot.hll.len(),
+            snapshot.expirations_epoch_secs.len(),
         );
+
+        self.store.restore_from_snapshot(snapshot).await;
 
         Ok(())
     }
@@ -662,6 +862,21 @@ impl RedisServer {
                     for (k, v) in snapshot.hashes.iter() {
                         let bytes = bincode::serde::encode_to_vec(v, bincode::config::standard())?;
                         table.insert(k.as_str(), bytes.as_slice())?;
+                    }
+                }
+                {
+                    // Sorted Sets
+                    let mut table = write_txn.open_table(T_SORTED_SETS)?;
+                    for (k, v) in snapshot.sorted_sets.iter() {
+                        let bytes = bincode::serde::encode_to_vec(v, bincode::config::standard())?;
+                        table.insert(k.as_str(), bytes.as_slice())?;
+                    }
+                }
+                {
+                    // HyperLogLog
+                    let mut table = write_txn.open_table(T_HLL)?;
+                    for (k, v) in snapshot.hll.iter() {
+                        table.insert(k.as_str(), v.as_slice())?;
                     }
                 }
                 {
@@ -740,9 +955,23 @@ impl RedisServer {
         let conn_id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
         let (tx, mut rx) = mpsc::channel::<(String, String)>(100);
         let mut subscriptions: HashSet<String> = HashSet::new();
+        // Pattern subscriptions: pattern -> original pattern string
+        let mut pattern_subscriptions: HashSet<String> = HashSet::new();
+        // Transaction state
+        let mut transaction_queue: Option<Vec<(String, Vec<RespValue>)>> = None;
 
         let framed = Framed::new(stream, RespParser::new());
         let (mut sink, mut stream) = framed.split();
+
+        // Helper macro to send response and break on error
+        macro_rules! send_resp {
+            ($resp:expr) => {
+                if let Err(e) = sink.send($resp).await {
+                    tracing::error!("send error: {}", e);
+                    break;
+                }
+            };
+        }
 
         loop {
             tokio::select! {
@@ -759,7 +988,70 @@ impl RedisServer {
 
                                     self.total_commands_processed.fetch_add(1, Ordering::Relaxed);
 
+                                    // If in MULTI mode, queue commands (except MULTI/EXEC/DISCARD/WATCH/UNWATCH)
+                                    if let Some(ref mut queue) = transaction_queue {
+                                        if !matches!(command_name.as_str(), "MULTI" | "EXEC" | "DISCARD" | "WATCH" | "UNWATCH") {
+                                            let args = array[1..].to_vec();
+                                            queue.push((command_name, args));
+                                            send_resp!(RespValue::SimpleString("QUEUED".to_string()));
+                                            continue;
+                                        }
+                                    }
+
                                     match command_name.as_str() {
+                                        // --- Transaction commands ---
+                                        "MULTI" => {
+                                            if transaction_queue.is_some() {
+                                                send_resp!(RespValue::Error("ERR MULTI calls can not be nested".to_string()));
+                                            } else {
+                                                transaction_queue = Some(Vec::new());
+                                                send_resp!(RespValue::SimpleString("OK".to_string()));
+                                            }
+                                        }
+                                        "EXEC" => {
+                                            match transaction_queue.take() {
+                                                Some(queued) => {
+                                                    let mut results = Vec::with_capacity(queued.len());
+                                                    for (cmd, args) in queued {
+                                                        match registry.get(&cmd) {
+                                                            Some(handler) => {
+                                                                match handler.execute(args).await {
+                                                                    Ok(resp) => results.push(resp),
+                                                                    Err(e) => results.push(RespValue::Error(format!("ERR {}", e))),
+                                                                }
+                                                            }
+                                                            None => {
+                                                                results.push(RespValue::Error(format!("ERR unknown command '{}'", cmd)));
+                                                            }
+                                                        }
+                                                    }
+                                                    send_resp!(RespValue::Array(Some(results)));
+                                                }
+                                                None => {
+                                                    send_resp!(RespValue::Error("ERR EXEC without MULTI".to_string()));
+                                                }
+                                            }
+                                        }
+                                        "DISCARD" => {
+                                            if transaction_queue.is_some() {
+                                                transaction_queue = None;
+                                                send_resp!(RespValue::SimpleString("OK".to_string()));
+                                            } else {
+                                                send_resp!(RespValue::Error("ERR DISCARD without MULTI".to_string()));
+                                            }
+                                        }
+                                        "WATCH" => {
+                                            // WATCH is a stub - we don't track key versions but accept the command
+                                            if transaction_queue.is_some() {
+                                                send_resp!(RespValue::Error("ERR WATCH inside MULTI is not allowed".to_string()));
+                                            } else {
+                                                send_resp!(RespValue::SimpleString("OK".to_string()));
+                                            }
+                                        }
+                                        "UNWATCH" => {
+                                            send_resp!(RespValue::SimpleString("OK".to_string()));
+                                        }
+                                        // --- PubSub commands ---
                                         "SUBSCRIBE" => {
                                             for arg in array.iter().skip(1) {
                                                 let channel = match arg {
@@ -774,12 +1066,13 @@ impl RedisServer {
                                                     }
                                                     subscriptions.insert(channel.clone());
                                                 }
+                                                let total = subscriptions.len() + pattern_subscriptions.len();
                                                 let resp = RespValue::Array(Some(vec![
                                                     RespValue::BulkString(Some("subscribe".as_bytes().to_vec())),
                                                     RespValue::BulkString(Some(channel.as_bytes().to_vec())),
-                                                    RespValue::Integer(subscriptions.len() as i64),
+                                                    RespValue::Integer(total as i64),
                                                 ]));
-                                                if let Err(e) = sink.send(resp).await { tracing::error!("send error: {}", e); break; }
+                                                send_resp!(resp);
                                             }
                                         }
                                         "UNSUBSCRIBE" => {
@@ -801,13 +1094,53 @@ impl RedisServer {
                                                     }
                                                 }
                                                 subscriptions.remove(&channel);
+                                                let total = subscriptions.len() + pattern_subscriptions.len();
                                                 let resp = RespValue::Array(Some(vec![
                                                     RespValue::BulkString(Some("unsubscribe".as_bytes().to_vec())),
                                                     RespValue::BulkString(Some(channel.as_bytes().to_vec())),
-                                                    RespValue::Integer(subscriptions.len() as i64),
+                                                    RespValue::Integer(total as i64),
                                                 ]));
-                                                if let Err(e) = sink.send(resp).await { tracing::error!("send error: {}", e); break; }
+                                                send_resp!(resp);
                                             }
+                                        }
+                                        "PSUBSCRIBE" => {
+                                            for arg in array.iter().skip(1) {
+                                                let pattern = match arg {
+                                                    RespValue::BulkString(Some(bytes)) => String::from_utf8_lossy(bytes).to_string(),
+                                                    _ => continue,
+                                                };
+                                                pattern_subscriptions.insert(pattern.clone());
+                                                let total = subscriptions.len() + pattern_subscriptions.len();
+                                                let resp = RespValue::Array(Some(vec![
+                                                    RespValue::BulkString(Some("psubscribe".as_bytes().to_vec())),
+                                                    RespValue::BulkString(Some(pattern.as_bytes().to_vec())),
+                                                    RespValue::Integer(total as i64),
+                                                ]));
+                                                send_resp!(resp);
+                                            }
+                                        }
+                                        "PUNSUBSCRIBE" => {
+                                            let targets: Vec<String> = if array.len() == 1 {
+                                                pattern_subscriptions.iter().cloned().collect()
+                                            } else {
+                                                array.iter().skip(1).filter_map(|arg| {
+                                                    match arg { RespValue::BulkString(Some(bytes)) => Some(String::from_utf8_lossy(bytes).to_string()), _ => None }
+                                                }).collect()
+                                            };
+                                            for pattern in targets {
+                                                pattern_subscriptions.remove(&pattern);
+                                                let total = subscriptions.len() + pattern_subscriptions.len();
+                                                let resp = RespValue::Array(Some(vec![
+                                                    RespValue::BulkString(Some("punsubscribe".as_bytes().to_vec())),
+                                                    RespValue::BulkString(Some(pattern.as_bytes().to_vec())),
+                                                    RespValue::Integer(total as i64),
+                                                ]));
+                                                send_resp!(resp);
+                                            }
+                                        }
+                                        "QUIT" => {
+                                            send_resp!(RespValue::SimpleString("OK".to_string()));
+                                            break;
                                         }
                                         "SAVE" => {
                                             // Perform a synchronous snapshot dump to the configured directory
@@ -815,12 +1148,10 @@ impl RedisServer {
                                             let dir = self.ensure_snapshot_dir().await;
                                             match Self::persist_snapshot_to_dir(&dir, snapshot).await {
                                                 Ok(_) => {
-                                                    let resp = RespValue::SimpleString("OK".to_string());
-                                                    if let Err(e) = sink.send(resp).await { tracing::error!("send error: {}", e); break; }
+                                                    send_resp!(RespValue::SimpleString("OK".to_string()));
                                                 }
                                                 Err(e) => {
-                                                    let err = RespValue::Error(format!("ERR snapshot failed: {}", e));
-                                                    if let Err(e) = sink.send(err).await { tracing::error!("send error: {}", e); break; }
+                                                    send_resp!(RespValue::Error(format!("ERR snapshot failed: {}", e)));
                                                 }
                                             }
                                         }
@@ -829,11 +1160,11 @@ impl RedisServer {
                                             match registry.get(&command_name) {
                                                 Some(handler) => {
                                                     let response = handler.execute(args).await?;
-                                                    if let Err(e) = sink.send(response).await { tracing::error!("send error: {}", e); break; }
+                                                    send_resp!(response);
                                                 },
                                                 None => {
                                                     let err = RespValue::Error(format!("ERR unknown command '{}'", command_name));
-                                                    if let Err(e) = sink.send(err).await { tracing::error!("send error: {}", e); break; }
+                                                    send_resp!(err);
                                                 }
                                             }
                                         }
@@ -841,7 +1172,7 @@ impl RedisServer {
                                 }
                                 _ => {
                                     let err = RespValue::Error("ERR invalid request format".to_string());
-                                    if let Err(e) = sink.send(err).await { tracing::error!("send error: {}", e); break; }
+                                    send_resp!(err);
                                 }
                             }
                         }
@@ -863,7 +1194,7 @@ impl RedisServer {
                                 RespValue::BulkString(Some(channel.as_bytes().to_vec())),
                                 RespValue::BulkString(Some(message.as_bytes().to_vec())),
                             ]));
-                            if let Err(e) = sink.send(resp).await { tracing::error!("send error: {}", e); break; }
+                            send_resp!(resp);
                         }
                         None => { break; }
                     }
@@ -917,11 +1248,7 @@ impl Clone for RedisServer {
         RedisServer {
             command_registry: Arc::clone(&self.command_registry),
             pubsub_channels: Arc::clone(&self.pubsub_channels),
-            string_store: Arc::clone(&self.string_store),
-            list_store: Arc::clone(&self.list_store),
-            set_store: Arc::clone(&self.set_store),
-            hash_store: Arc::clone(&self.hash_store),
-            expirations: Arc::clone(&self.expirations),
+            store: self.store.clone(),
             snapshot_dir: Arc::clone(&self.snapshot_dir),
             total_connections_served: Arc::clone(&self.total_connections_served),
             total_commands_processed: Arc::clone(&self.total_commands_processed),
