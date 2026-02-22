@@ -78,7 +78,9 @@ impl RespParser {
         RespParser
     }
 
-    fn read_line(&self, buf: &mut BytesMut) -> Option<String> {
+    /// Peek at the first line without consuming buffer bytes.
+    /// Returns (line_content_after_type_marker, total_bytes_to_advance) or None if incomplete.
+    fn peek_line(&self, buf: &BytesMut) -> Option<(String, usize)> {
         if let Some(n) = buf.iter().position(|b| *b == b'\r') {
             if buf.len() <= n + 1 {
                 return None;
@@ -86,10 +88,8 @@ impl RespParser {
             if buf[n + 1] != b'\n' {
                 return None;
             }
-
             let line = String::from_utf8_lossy(&buf[1..n]).to_string();
-            buf.advance(n + 2);
-            Some(line)
+            Some((line, n + 2))
         } else {
             None
         }
@@ -172,7 +172,8 @@ impl Encoder<RespValue> for RespParser {
 
 impl RespParser {
     fn parse_simple_string(&self, buf: &mut BytesMut) -> Result<Option<RespValue>, RespError> {
-        if let Some(line) = self.read_line(buf) {
+        if let Some((line, advance)) = self.peek_line(buf) {
+            buf.advance(advance);
             Ok(Some(RespValue::SimpleString(line)))
         } else {
             Ok(None)
@@ -180,7 +181,8 @@ impl RespParser {
     }
 
     fn parse_error(&self, buf: &mut BytesMut) -> Result<Option<RespValue>, RespError> {
-        if let Some(line) = self.read_line(buf) {
+        if let Some((line, advance)) = self.peek_line(buf) {
+            buf.advance(advance);
             Ok(Some(RespValue::Error(line)))
         } else {
             Ok(None)
@@ -188,9 +190,12 @@ impl RespParser {
     }
 
     fn parse_integer(&self, buf: &mut BytesMut) -> Result<Option<RespValue>, RespError> {
-        if let Some(line) = self.read_line(buf) {
+        if let Some((line, advance)) = self.peek_line(buf) {
             match line.parse::<i64>() {
-                Ok(n) => Ok(Some(RespValue::Integer(n))),
+                Ok(n) => {
+                    buf.advance(advance);
+                    Ok(Some(RespValue::Integer(n)))
+                }
                 Err(_) => Err(RespError::IntegerParseError),
             }
         } else {
@@ -199,14 +204,21 @@ impl RespParser {
     }
 
     fn parse_bulk_string(&self, buf: &mut BytesMut) -> Result<Option<RespValue>, RespError> {
-        if let Some(len_str) = self.read_line(buf) {
+        if let Some((len_str, line_advance)) = self.peek_line(buf) {
             match len_str.parse::<isize>() {
-                Ok(-1) => Ok(Some(RespValue::BulkString(None))),
+                Ok(-1) => {
+                    buf.advance(line_advance);
+                    Ok(Some(RespValue::BulkString(None)))
+                }
                 Ok(len) if len >= 0 => {
                     let len = len as usize;
-                    if buf.len() < len + 2 {
+                    // Check if we have the full data + \r\n BEFORE consuming anything
+                    if buf.len() < line_advance + len + 2 {
                         return Ok(None);
                     }
+                    // Now safe to consume: advance past the length line
+                    buf.advance(line_advance);
+                    // Then consume the data + \r\n
                     let data = buf.split_to(len + 2);
                     Ok(Some(RespValue::BulkString(Some(data[..len].to_vec()))))
                 }
@@ -218,16 +230,26 @@ impl RespParser {
     }
 
     fn parse_array(&mut self, buf: &mut BytesMut) -> Result<Option<RespValue>, RespError> {
-        if let Some(len_str) = self.read_line(buf) {
+        if let Some((len_str, line_advance)) = self.peek_line(buf) {
             match len_str.parse::<isize>() {
-                Ok(-1) => Ok(Some(RespValue::Array(None))),
+                Ok(-1) => {
+                    buf.advance(line_advance);
+                    Ok(Some(RespValue::Array(None)))
+                }
                 Ok(len) if len >= 0 => {
                     let len = len as usize;
+                    // Save the buffer state so we can restore on incomplete
+                    let saved = buf.clone();
+                    buf.advance(line_advance);
                     let mut items = Vec::with_capacity(len);
                     for _ in 0..len {
                         match self.decode(buf)? {
                             Some(item) => items.push(item),
-                            None => return Ok(None),
+                            None => {
+                                // Incomplete: restore the buffer to its original state
+                                *buf = saved;
+                                return Ok(None);
+                            }
                         }
                     }
                     Ok(Some(RespValue::Array(Some(items))))
@@ -434,5 +456,126 @@ mod tests {
             )
             .unwrap();
         assert_eq!(&buf[..], b"*2\r\n*1\r\n:1\r\n$2\r\nhi\r\n");
+    }
+
+    #[test]
+    fn test_parse_invalid_bulk_string_length() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::from("$-2\r\n".as_bytes());
+        let result = parser.decode(&mut buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_invalid_integer() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::from(":abc\r\n".as_bytes());
+        let result = parser.decode(&mut buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_invalid_array_length() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::from("*-2\r\n".as_bytes());
+        let result = parser.decode(&mut buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_incomplete_bulk_data() {
+        let mut parser = RespParser::new();
+        // Bulk string says length 10 but only has 3 bytes of data
+        let mut buf = BytesMut::from("$10\r\nabc\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_incomplete_array() {
+        let mut parser = RespParser::new();
+        // Array says 3 elements but only has 1
+        let mut buf = BytesMut::from("*3\r\n:1\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_incomplete_simple_string() {
+        let mut parser = RespParser::new();
+        // No \r\n terminator
+        let mut buf = BytesMut::from("+OK".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_incomplete_error() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::from("-ERR".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_incomplete_integer() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::from(":100".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_incomplete_bulk_length() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::from("$5".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_serialize_bulk_string() {
+        let val = RespValue::BulkString(Some(b"hello".to_vec()));
+        assert_eq!(val.serialize(), b"$5\r\nhello\r\n");
+    }
+
+    #[test]
+    fn test_serialize_null_bulk_string() {
+        let val = RespValue::BulkString(None);
+        assert_eq!(val.serialize(), b"$-1\r\n");
+    }
+
+    #[test]
+    fn test_serialize_array() {
+        let val = RespValue::Array(Some(vec![RespValue::Integer(1), RespValue::Integer(2)]));
+        assert_eq!(val.serialize(), b"*2\r\n:1\r\n:2\r\n");
+    }
+
+    #[test]
+    fn test_serialize_null_array() {
+        let val = RespValue::Array(None);
+        assert_eq!(val.serialize(), b"*-1\r\n");
+    }
+
+    #[test]
+    fn test_serialize_error() {
+        let val = RespValue::Error("ERR test".to_string());
+        assert_eq!(val.serialize(), b"-ERR test\r\n");
+    }
+
+    #[test]
+    fn test_parse_zero_length_bulk_string() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::from("$0\r\n\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, Some(RespValue::BulkString(Some(vec![]))));
+    }
+
+    #[test]
+    fn test_parse_empty_array() {
+        let mut parser = RespParser::new();
+        let mut buf = BytesMut::from("*0\r\n".as_bytes());
+        let result = parser.decode(&mut buf).unwrap();
+        assert_eq!(result, Some(RespValue::Array(Some(vec![]))));
     }
 }

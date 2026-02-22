@@ -199,6 +199,9 @@ impl CommandHandler for DelCommand {
         let mut lists = self.store.lists.write().await;
         let mut sets = self.store.sets.write().await;
         let mut hashes = self.store.hashes.write().await;
+        let mut sorted_sets = self.store.sorted_sets.write().await;
+        let mut hll = self.store.hll.write().await;
+        let mut bitmaps = self.store.bitmaps.write().await;
         let mut exps = self.store.expirations.write().await;
 
         for arg in &args {
@@ -217,6 +220,15 @@ impl CommandHandler for DelCommand {
                 found = true;
             }
             if hashes.remove(&key).is_some() {
+                found = true;
+            }
+            if sorted_sets.remove(&key).is_some() {
+                found = true;
+            }
+            if hll.remove(&key).is_some() {
+                found = true;
+            }
+            if bitmaps.remove(&key).is_some() {
                 found = true;
             }
             if found {
@@ -253,6 +265,9 @@ impl CommandHandler for ExistsCommand {
         let lists = self.store.lists.read().await;
         let sets = self.store.sets.read().await;
         let hashes = self.store.hashes.read().await;
+        let sorted_sets = self.store.sorted_sets.read().await;
+        let hll = self.store.hll.read().await;
+        let bitmaps = self.store.bitmaps.read().await;
         let mut count = 0i64;
 
         for arg in &args {
@@ -264,6 +279,9 @@ impl CommandHandler for ExistsCommand {
                 || lists.contains_key(&key)
                 || sets.contains_key(&key)
                 || hashes.contains_key(&key)
+                || sorted_sets.contains_key(&key)
+                || hll.contains_key(&key)
+                || bitmaps.contains_key(&key)
             {
                 count += 1;
             }

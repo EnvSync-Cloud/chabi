@@ -230,3 +230,223 @@ impl CommandHandler for PubSubCommand {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    fn channels() -> Arc<RwLock<ChannelMap>> {
+        Arc::new(RwLock::new(HashMap::new()))
+    }
+
+    fn bulk(s: &str) -> RespValue {
+        RespValue::BulkString(Some(s.as_bytes().to_vec()))
+    }
+
+    #[tokio::test]
+    async fn test_publish_no_subscribers() {
+        let ch = channels();
+        let cmd = PublishCommand::new(ch);
+        let r = cmd
+            .execute(vec![bulk("chan1"), bulk("hello")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::Integer(0));
+    }
+
+    #[tokio::test]
+    async fn test_publish_with_subscriber() {
+        let ch = channels();
+        let (tx, mut rx) = mpsc::channel(10);
+        {
+            let mut map = ch.write().unwrap();
+            map.entry("chan1".to_string()).or_default().push((1, tx));
+        }
+        let cmd = PublishCommand::new(ch);
+        let r = cmd
+            .execute(vec![bulk("chan1"), bulk("hello")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::Integer(1));
+        let msg = rx.recv().await.unwrap();
+        assert_eq!(msg, ("chan1".to_string(), "hello".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_publish_dead_sender_cleanup() {
+        let ch = channels();
+        let (tx, rx) = mpsc::channel(10);
+        {
+            let mut map = ch.write().unwrap();
+            map.entry("chan1".to_string()).or_default().push((1, tx));
+        }
+        // Drop receiver so sender is dead
+        drop(rx);
+        let cmd = PublishCommand::new(ch.clone());
+        let r = cmd
+            .execute(vec![bulk("chan1"), bulk("hello")])
+            .await
+            .unwrap();
+        assert_eq!(r, RespValue::Integer(0));
+        // Channel should be cleaned up
+        let map = ch.read().unwrap();
+        assert!(!map.contains_key("chan1"));
+    }
+
+    #[tokio::test]
+    async fn test_publish_wrong_args() {
+        let ch = channels();
+        let cmd = PublishCommand::new(ch);
+        let r = cmd.execute(vec![bulk("chan1")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_publish_invalid_channel() {
+        let ch = channels();
+        let cmd = PublishCommand::new(ch);
+        let r = cmd
+            .execute(vec![RespValue::Integer(1), bulk("msg")])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_publish_invalid_message() {
+        let ch = channels();
+        let cmd = PublishCommand::new(ch);
+        let r = cmd
+            .execute(vec![bulk("chan1"), RespValue::Integer(1)])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_command() {
+        let ch = channels();
+        let cmd = SubscribeCommand::new(ch);
+        let r = cmd
+            .execute(vec![bulk("chan1"), bulk("chan2")])
+            .await
+            .unwrap();
+        match r {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 2); // Two subscribe acknowledgments
+            }
+            _ => panic!("Expected Array"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_no_args() {
+        let ch = channels();
+        let cmd = SubscribeCommand::new(ch);
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_specific() {
+        let ch = channels();
+        let cmd = UnsubscribeCommand::new(ch);
+        let r = cmd.execute(vec![bulk("chan1")]).await.unwrap();
+        match r {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 1);
+            }
+            _ => panic!("Expected Array"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_all() {
+        let ch = channels();
+        let cmd = UnsubscribeCommand::new(ch);
+        let r = cmd.execute(vec![]).await.unwrap();
+        match r {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 1); // placeholder unsubscribe
+            }
+            _ => panic!("Expected Array"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pubsub_channels() {
+        let ch = channels();
+        let (tx, _rx) = mpsc::channel(10);
+        {
+            let mut map = ch.write().unwrap();
+            map.entry("chan1".to_string()).or_default().push((1, tx));
+        }
+        let cmd = PubSubCommand::new(ch);
+        let r = cmd.execute(vec![bulk("CHANNELS")]).await.unwrap();
+        match r {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 1);
+            }
+            _ => panic!("Expected Array"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pubsub_numsub() {
+        let ch = channels();
+        let (tx, _rx) = mpsc::channel(10);
+        {
+            let mut map = ch.write().unwrap();
+            map.entry("chan1".to_string()).or_default().push((1, tx));
+        }
+        let cmd = PubSubCommand::new(ch);
+        let r = cmd
+            .execute(vec![bulk("NUMSUB"), bulk("chan1"), bulk("chan2")])
+            .await
+            .unwrap();
+        match r {
+            RespValue::Array(Some(arr)) => {
+                // chan1 + count + chan2 + count = 4 elements
+                assert_eq!(arr.len(), 4);
+                assert_eq!(arr[1], RespValue::Integer(1)); // chan1 has 1 subscriber
+                assert_eq!(arr[3], RespValue::Integer(0)); // chan2 has 0
+            }
+            _ => panic!("Expected Array"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pubsub_numpat() {
+        let ch = channels();
+        let cmd = PubSubCommand::new(ch);
+        let r = cmd.execute(vec![bulk("NUMPAT")]).await.unwrap();
+        assert_eq!(r, RespValue::Integer(0));
+    }
+
+    #[tokio::test]
+    async fn test_pubsub_unknown_subcommand() {
+        let ch = channels();
+        let cmd = PubSubCommand::new(ch);
+        let r = cmd.execute(vec![bulk("FOOBAR")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_pubsub_no_args() {
+        let ch = channels();
+        let cmd = PubSubCommand::new(ch);
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_pubsub_invalid_subcommand_type() {
+        let ch = channels();
+        let cmd = PubSubCommand::new(ch);
+        let r = cmd.execute(vec![RespValue::Integer(1)]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+}

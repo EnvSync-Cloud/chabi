@@ -31,7 +31,9 @@ impl CommandHandler for InfoCommand {
         let hash_count = self.store.hashes.read().await.len();
         let list_count = self.store.lists.read().await.len();
         let set_count = self.store.sets.read().await.len();
-        let total_keys = string_count + hash_count + list_count + set_count;
+        let sorted_set_count = self.store.sorted_sets.read().await.len();
+        let hll_count = self.store.hll.read().await.len();
+        let total_keys = string_count + hash_count + list_count + set_count + sorted_set_count + hll_count;
         let info = format!(
             "# Server\r\nredis_version:7.0.0\r\nredis_mode:standalone\r\nprocess_id:{}\r\n# Keyspace\r\ndb0:keys={},expires=0,avg_ttl=0\r\n",
             std::process::id(),
@@ -84,7 +86,9 @@ impl CommandHandler for DbSizeCommand {
         let total = self.store.strings.read().await.len()
             + self.store.lists.read().await.len()
             + self.store.sets.read().await.len()
-            + self.store.hashes.read().await.len();
+            + self.store.hashes.read().await.len()
+            + self.store.sorted_sets.read().await.len()
+            + self.store.hll.read().await.len();
         Ok(RespValue::Integer(total as i64))
     }
 }
@@ -111,6 +115,7 @@ impl CommandHandler for FlushDbCommand {
         self.store.hashes.write().await.clear();
         self.store.sorted_sets.write().await.clear();
         self.store.hll.write().await.clear();
+        self.store.bitmaps.write().await.clear();
         self.store.expirations.write().await.clear();
         Ok(RespValue::SimpleString("OK".to_string()))
     }
@@ -390,5 +395,88 @@ mod tests {
             r,
             RespValue::SimpleString("Background saving started".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_config_rewrite() {
+        let cmd = ConfigCommand::new();
+        let r = cmd.execute(vec![bulk("REWRITE")]).await.unwrap();
+        assert_eq!(r, RespValue::SimpleString("OK".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_config_unknown_subcmd() {
+        let cmd = ConfigCommand::new();
+        let r = cmd.execute(vec![bulk("FOOBAR")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_config_non_bulkstring_subcmd() {
+        let cmd = ConfigCommand::new();
+        let r = cmd.execute(vec![RespValue::Integer(1)]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_command_info() {
+        let cmd = CommandCommand::new();
+        let r = cmd.execute(vec![bulk("INFO")]).await.unwrap();
+        assert!(matches!(r, RespValue::Array(Some(_))));
+    }
+
+    #[tokio::test]
+    async fn test_command_unknown_subcmd() {
+        let cmd = CommandCommand::new();
+        let r = cmd.execute(vec![bulk("FOOBAR")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_command_non_bulkstring_subcmd() {
+        let cmd = CommandCommand::new();
+        let r = cmd.execute(vec![RespValue::Integer(1)]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_save_default() {
+        let cmd = SaveCommand::default();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert_eq!(r, RespValue::SimpleString("OK".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_bgsave_default() {
+        let cmd = BgSaveCommand::default();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert_eq!(
+            r,
+            RespValue::SimpleString("Background saving started".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_time_default() {
+        let cmd = TimeCommand::default();
+        let r = cmd.execute(vec![]).await.unwrap();
+        match r {
+            RespValue::Array(Some(arr)) => assert_eq!(arr.len(), 2),
+            _ => panic!("Expected Array"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_config_default() {
+        let cmd = ConfigCommand::default();
+        let r = cmd.execute(vec![bulk("GET"), bulk("x")]).await.unwrap();
+        assert!(matches!(r, RespValue::Array(Some(_))));
+    }
+
+    #[tokio::test]
+    async fn test_command_default() {
+        let cmd = CommandCommand::default();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Array(Some(_))));
     }
 }

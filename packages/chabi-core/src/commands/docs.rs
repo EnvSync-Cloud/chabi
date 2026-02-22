@@ -97,6 +97,32 @@ impl CommandHandler for DocsCommand {
     }
 }
 
+#[cfg(test)]
+mod docs_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_docs_command() {
+        let cmd = DocsCommand::new();
+        let result = cmd.execute(vec![]).await.unwrap();
+        match result {
+            RespValue::Array(Some(arr)) => {
+                assert!(!arr.is_empty());
+                // Should be pairs of (command, description)
+                assert_eq!(arr.len() % 2, 0);
+            }
+            _ => panic!("Expected non-empty Array"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_docs_default() {
+        let cmd = DocsCommand::default();
+        let result = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(result, RespValue::Array(Some(_))));
+    }
+}
+
 /// Command to get Redis command details
 #[derive(Clone)]
 pub struct CommandCommand {}
@@ -184,5 +210,38 @@ impl CommandHandler for CommandCommand {
         }
 
         Ok(RespValue::Array(Some(result)))
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_command_command() {
+        let cmd = CommandCommand::new();
+        let result = cmd.execute(vec![]).await.unwrap();
+        match result {
+            RespValue::Array(Some(arr)) => {
+                assert!(!arr.is_empty());
+                // Each entry is an Array of [name, categories_array]
+                for item in &arr {
+                    match item {
+                        RespValue::Array(Some(inner)) => {
+                            assert_eq!(inner.len(), 2);
+                        }
+                        _ => panic!("Expected Array for command info"),
+                    }
+                }
+            }
+            _ => panic!("Expected non-empty Array"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_command_default() {
+        let cmd = CommandCommand::default();
+        let result = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(result, RespValue::Array(Some(_))));
     }
 }

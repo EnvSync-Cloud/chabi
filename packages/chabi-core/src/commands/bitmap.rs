@@ -56,9 +56,8 @@ impl CommandHandler for SetBitCommand {
         let byte_idx = offset / 8;
         let bit_idx = 7 - (offset % 8);
 
-        let mut store = self.store.strings.write().await;
-        let val = store.entry(key).or_insert_with(String::new);
-        let mut bytes = val.as_bytes().to_vec();
+        let mut store = self.store.bitmaps.write().await;
+        let bytes = store.entry(key).or_insert_with(Vec::new);
         if bytes.len() <= byte_idx {
             bytes.resize(byte_idx + 1, 0);
         }
@@ -68,7 +67,6 @@ impl CommandHandler for SetBitCommand {
         } else {
             bytes[byte_idx] &= !(1 << bit_idx);
         }
-        *val = String::from_utf8_lossy(&bytes).to_string();
         Ok(RespValue::Integer(old_bit as i64))
     }
 }
@@ -110,10 +108,9 @@ impl CommandHandler for GetBitCommand {
         let byte_idx = offset / 8;
         let bit_idx = 7 - (offset % 8);
 
-        let store = self.store.strings.read().await;
+        let store = self.store.bitmaps.read().await;
         match store.get(&key) {
-            Some(val) => {
-                let bytes = val.as_bytes();
+            Some(bytes) => {
                 if byte_idx >= bytes.len() {
                     Ok(RespValue::Integer(0))
                 } else {
@@ -153,9 +150,9 @@ impl CommandHandler for BitCountCommand {
             None => return Ok(RespValue::Error("ERR invalid key".to_string())),
         };
 
-        let store = self.store.strings.read().await;
+        let store = self.store.bitmaps.read().await;
         let bytes = match store.get(&key) {
-            Some(val) => val.as_bytes().to_vec(),
+            Some(val) => val.clone(),
             None => return Ok(RespValue::Integer(0)),
         };
 
@@ -221,9 +218,9 @@ impl CommandHandler for BitPosCommand {
             }
         };
 
-        let store = self.store.strings.read().await;
+        let store = self.store.bitmaps.read().await;
         let bytes = match store.get(&key) {
-            Some(val) => val.as_bytes().to_vec(),
+            Some(val) => val.clone(),
             None => {
                 return Ok(RespValue::Integer(if bit == 0 { 0 } else { -1 }));
             }

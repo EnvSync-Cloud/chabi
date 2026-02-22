@@ -85,7 +85,7 @@ impl CommandHandler for SelectCommand {
             }
         };
         match index.parse::<u32>() {
-            Ok(0) => Ok(RespValue::SimpleString("OK".to_string())),
+            Ok(0..=15) => Ok(RespValue::SimpleString("OK".to_string())),
             Ok(_) => Ok(RespValue::Error("ERR DB index is out of range".to_string())),
             Err(_) => Ok(RespValue::Error(
                 "ERR value is not an integer or out of range".to_string(),
@@ -282,6 +282,18 @@ mod tests {
             .execute(vec![RespValue::BulkString(Some(b"1".to_vec()))])
             .await
             .unwrap();
+        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+
+        let result = cmd
+            .execute(vec![RespValue::BulkString(Some(b"15".to_vec()))])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::SimpleString("OK".to_string()));
+
+        let result = cmd
+            .execute(vec![RespValue::BulkString(Some(b"16".to_vec()))])
+            .await
+            .unwrap();
         assert!(matches!(result, RespValue::Error(_)));
     }
 
@@ -373,5 +385,66 @@ mod tests {
         let msg = bulk("hello world");
         let r = cmd.execute(vec![msg.clone()]).await.unwrap();
         assert_eq!(r, msg);
+    }
+
+    #[tokio::test]
+    async fn test_client_list() {
+        let cmd = ClientCommand::new();
+        let r = cmd.execute(vec![bulk("LIST")]).await.unwrap();
+        match r {
+            RespValue::BulkString(Some(bytes)) => {
+                let s = String::from_utf8_lossy(&bytes);
+                assert!(s.contains("id=1"));
+            }
+            _ => panic!("Expected BulkString"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_client_info() {
+        let cmd = ClientCommand::new();
+        let r = cmd.execute(vec![bulk("INFO")]).await.unwrap();
+        match r {
+            RespValue::BulkString(Some(bytes)) => {
+                let s = String::from_utf8_lossy(&bytes);
+                assert!(s.contains("id=1"));
+            }
+            _ => panic!("Expected BulkString"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_select_no_args() {
+        let cmd = SelectCommand::new();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_select_non_bulkstring_arg() {
+        let cmd = SelectCommand::new();
+        let r = cmd.execute(vec![RespValue::Integer(0)]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_client_non_bulkstring_subcmd() {
+        let cmd = ClientCommand::new();
+        let r = cmd.execute(vec![RespValue::Integer(1)]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn test_ping_default() {
+        let cmd = PingCommand::default();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert_eq!(r, RespValue::SimpleString("PONG".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_echo_default() {
+        let cmd = EchoCommand::default();
+        let r = cmd.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
     }
 }

@@ -13,6 +13,7 @@ pub type SetStore = Arc<RwLock<HashMap<String, HashSet<String>>>>;
 pub type HashStore = Arc<RwLock<HashMap<String, HashMap<String, String>>>>;
 pub type SortedSetStore = Arc<RwLock<HashMap<String, SortedSet>>>;
 pub type HllStore = Arc<RwLock<HashMap<String, Vec<u8>>>>;
+pub type BitmapStore = Arc<RwLock<HashMap<String, Vec<u8>>>>;
 pub type ExpirationStore = Arc<RwLock<HashMap<String, Instant>>>;
 
 /// Unified data store holding all Redis-like data structures.
@@ -25,6 +26,7 @@ pub struct DataStore {
     pub hashes: HashStore,
     pub sorted_sets: SortedSetStore,
     pub hll: HllStore,
+    pub bitmaps: BitmapStore,
     pub expirations: ExpirationStore,
 }
 
@@ -37,6 +39,7 @@ impl DataStore {
             hashes: Arc::new(RwLock::new(HashMap::new())),
             sorted_sets: Arc::new(RwLock::new(HashMap::new())),
             hll: Arc::new(RwLock::new(HashMap::new())),
+            bitmaps: Arc::new(RwLock::new(HashMap::new())),
             expirations: Arc::new(RwLock::new(HashMap::new())),
         }
     }

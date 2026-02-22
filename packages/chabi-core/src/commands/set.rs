@@ -1687,4 +1687,221 @@ mod tests {
             .unwrap();
         assert_eq!(result, RespValue::Integer(0));
     }
+
+    // 18. SRANDMEMBER with negative count allows duplicates
+    #[tokio::test]
+    async fn test_srandmember_negative_count() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let srandmember = SRandMemberCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+
+        let result = srandmember
+            .execute(vec![bulk("myset"), bulk("-5")])
+            .await
+            .unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 5); // 5 elements, may have duplicates
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    // 19. SRANDMEMBER on missing key
+    #[tokio::test]
+    async fn test_srandmember_missing_key() {
+        let store = DataStore::new();
+        let srandmember = SRandMemberCommand::new(store.clone());
+
+        // Without count
+        let result = srandmember.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(result, RespValue::BulkString(None));
+
+        // With count
+        let result = srandmember
+            .execute(vec![bulk("nokey"), bulk("3")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Array(Some(vec![])));
+    }
+
+    // 20. SSCAN with MATCH pattern
+    #[tokio::test]
+    async fn test_sscan_with_match() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sscan = SScanCommand::new(store.clone());
+
+        sadd.execute(vec![
+            bulk("myset"),
+            bulk("apple"),
+            bulk("banana"),
+            bulk("avocado"),
+        ])
+        .await
+        .unwrap();
+
+        let result = sscan
+            .execute(vec![bulk("myset"), bulk("0"), bulk("MATCH"), bulk("a*")])
+            .await
+            .unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 2);
+                match &arr[1] {
+                    RespValue::Array(Some(members)) => {
+                        // Only apple and avocado match "a*"
+                        assert_eq!(members.len(), 2);
+                    }
+                    other => panic!("expected Array, got {:?}", other),
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    // 21. SSCAN with COUNT
+    #[tokio::test]
+    async fn test_sscan_with_count() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sscan = SScanCommand::new(store.clone());
+
+        sadd.execute(vec![
+            bulk("myset"),
+            bulk("a"),
+            bulk("b"),
+            bulk("c"),
+            bulk("d"),
+            bulk("e"),
+        ])
+        .await
+        .unwrap();
+
+        // COUNT 2 — should return 2 items and a non-zero cursor
+        let result = sscan
+            .execute(vec![bulk("myset"), bulk("0"), bulk("COUNT"), bulk("2")])
+            .await
+            .unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 2);
+                match &arr[1] {
+                    RespValue::Array(Some(members)) => {
+                        assert_eq!(members.len(), 2);
+                    }
+                    other => panic!("expected Array, got {:?}", other),
+                }
+                // Cursor should be "2"
+                assert_eq!(arr[0], RespValue::BulkString(Some(b"2".to_vec())));
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    // 22. SINTERCARD wrong args
+    #[tokio::test]
+    async fn test_sintercard_wrong_args() {
+        let store = DataStore::new();
+        let sintercard = SInterCardCommand::new(store.clone());
+
+        // No args
+        let r = sintercard.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        // Non-positive numkeys
+        let r = sintercard.execute(vec![bulk("0")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        // numkeys > available keys
+        let r = sintercard
+            .execute(vec![bulk("3"), bulk("s1")])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        // Non-integer numkeys
+        let r = sintercard
+            .execute(vec![RespValue::Integer(1)])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    // 23. SRANDMEMBER wrong args
+    #[tokio::test]
+    async fn test_srandmember_wrong_args() {
+        let store = DataStore::new();
+        let srandmember = SRandMemberCommand::new(store.clone());
+
+        let r = srandmember.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        let r = srandmember
+            .execute(vec![bulk("k"), bulk("1"), bulk("extra")])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    // 24. SRANDMEMBER non-integer count
+    #[tokio::test]
+    async fn test_srandmember_non_integer_count() {
+        let store = DataStore::new();
+        let srandmember = SRandMemberCommand::new(store.clone());
+        let sadd = SAddCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a")]).await.unwrap();
+
+        let r = srandmember
+            .execute(vec![bulk("myset"), bulk("abc")])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    // 25. SPOP wrong args
+    #[tokio::test]
+    async fn test_spop_wrong_args() {
+        let store = DataStore::new();
+        let spop = SPopCommand::new(store.clone());
+
+        let r = spop.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        let r = spop
+            .execute(vec![bulk("k"), bulk("1"), bulk("extra")])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    // 26. SPOP with count on missing key
+    #[tokio::test]
+    async fn test_spop_count_missing_key() {
+        let store = DataStore::new();
+        let spop = SPopCommand::new(store.clone());
+
+        let r = spop.execute(vec![bulk("nokey"), bulk("2")]).await.unwrap();
+        assert_eq!(r, RespValue::Array(Some(vec![])));
+    }
+
+    // 27. SSCAN wrong args
+    #[tokio::test]
+    async fn test_sscan_wrong_args() {
+        let store = DataStore::new();
+        let sscan = SScanCommand::new(store.clone());
+
+        // Too few args
+        let r = sscan.execute(vec![bulk("k")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        // Invalid cursor
+        let r = sscan.execute(vec![bulk("k"), bulk("abc")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
 }

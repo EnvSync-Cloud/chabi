@@ -123,6 +123,32 @@ fn key_type_str(
     }
 }
 
+fn key_type_str_extended(
+    key: &str,
+    strings: &HashMap<String, String>,
+    lists: &HashMap<String, Vec<String>>,
+    sets: &HashMap<String, HashSet<String>>,
+    hashes: &HashMap<String, HashMap<String, String>>,
+    sorted_sets: &HashMap<String, crate::commands::sorted_set::SortedSet>,
+    hll: &HashMap<String, Vec<u8>>,
+) -> &'static str {
+    if strings.contains_key(key) {
+        "string"
+    } else if lists.contains_key(key) {
+        "list"
+    } else if sets.contains_key(key) {
+        "set"
+    } else if hashes.contains_key(key) {
+        "hash"
+    } else if sorted_sets.contains_key(key) {
+        "zset"
+    } else if hll.contains_key(key) {
+        "string"
+    } else {
+        "none"
+    }
+}
+
 // --- KEYS (cross-type with glob support) ---
 
 #[derive(Clone)]
@@ -669,7 +695,9 @@ impl CommandHandler for TypeCommand {
         let lists = self.store.lists.read().await;
         let sets = self.store.sets.read().await;
         let hashes = self.store.hashes.read().await;
-        let t = key_type_str(&key, &strings, &lists, &sets, &hashes);
+        let sorted_sets = self.store.sorted_sets.read().await;
+        let hll = self.store.hll.read().await;
+        let t = key_type_str_extended(&key, &strings, &lists, &sets, &hashes, &sorted_sets, &hll);
         Ok(RespValue::SimpleString(t.to_string()))
     }
 }
@@ -734,6 +762,9 @@ impl CommandHandler for UnlinkCommand {
         let mut lists = self.store.lists.write().await;
         let mut sets = self.store.sets.write().await;
         let mut hashes = self.store.hashes.write().await;
+        let mut sorted_sets = self.store.sorted_sets.write().await;
+        let mut hll = self.store.hll.write().await;
+        let mut bitmaps = self.store.bitmaps.write().await;
         let mut exps = self.store.expirations.write().await;
         for arg in &args {
             let key = match extract_string(arg) {
@@ -751,6 +782,15 @@ impl CommandHandler for UnlinkCommand {
                 found = true;
             }
             if hashes.remove(&key).is_some() {
+                found = true;
+            }
+            if sorted_sets.remove(&key).is_some() {
+                found = true;
+            }
+            if hll.remove(&key).is_some() {
+                found = true;
+            }
+            if bitmaps.remove(&key).is_some() {
                 found = true;
             }
             if found {
