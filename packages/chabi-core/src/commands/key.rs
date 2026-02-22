@@ -103,26 +103,6 @@ fn key_exists_in_any(
         || hashes.contains_key(key)
 }
 
-fn key_type_str(
-    key: &str,
-    strings: &HashMap<String, String>,
-    lists: &HashMap<String, Vec<String>>,
-    sets: &HashMap<String, HashSet<String>>,
-    hashes: &HashMap<String, HashMap<String, String>>,
-) -> &'static str {
-    if strings.contains_key(key) {
-        "string"
-    } else if lists.contains_key(key) {
-        "list"
-    } else if sets.contains_key(key) {
-        "set"
-    } else if hashes.contains_key(key) {
-        "hash"
-    } else {
-        "none"
-    }
-}
-
 fn key_type_str_extended(
     key: &str,
     strings: &HashMap<String, String>,

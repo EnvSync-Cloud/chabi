@@ -68,9 +68,7 @@ async fn test_snapshot_endpoint(client: &Client, base_url: &str) -> TestResult {
                 Ok(json) => {
                     // Response is keyed by DB index: {"0": {"strings": ..., ...}, ...}
                     // Validate that DB 0 exists and contains the required snapshot keys
-                    let db0 = json
-                        .as_object()
-                        .and_then(|o| o.get("0"));
+                    let db0 = json.as_object().and_then(|o| o.get("0"));
                     let required_keys = [
                         "strings",
                         "lists",

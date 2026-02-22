@@ -23,7 +23,6 @@ type PubSubChannels =
 
 type BoxedError = Box<dyn std::error::Error + Send + Sync>;
 
-
 static NEXT_CONN_ID: AtomicUsize = AtomicUsize::new(1);
 
 pub const NUM_DBS: usize = 16;
@@ -704,8 +703,7 @@ impl RedisServer {
                 let mut results = Vec::new();
 
                 for db_idx in 0..NUM_DBS {
-                    let snapshot =
-                        read_snapshot_for_db(&rtxn, db_idx)?;
+                    let snapshot = read_snapshot_for_db(&rtxn, db_idx)?;
                     if !snapshot_is_empty(&snapshot) {
                         results.push((db_idx, snapshot));
                     }
@@ -733,18 +731,13 @@ impl RedisServer {
         }
 
         for (db_idx, snapshot) in all_snapshots {
-            self.databases[db_idx]
-                .restore_from_snapshot(snapshot)
-                .await;
+            self.databases[db_idx].restore_from_snapshot(snapshot).await;
         }
 
         Ok(())
     }
 
-    async fn persist_snapshot_to_dir(
-        dir: &str,
-        snapshots: Vec<(usize, Snapshot)>,
-    ) -> Result<()> {
+    async fn persist_snapshot_to_dir(dir: &str, snapshots: Vec<(usize, Snapshot)>) -> Result<()> {
         let dir = dir.to_string();
         tokio::task::spawn_blocking(move || -> Result<()> {
             // Ensure directory exists
@@ -1344,11 +1337,8 @@ fn read_snapshot_for_db(
             for item in table.iter()? {
                 let (k, v) = item?;
                 let key = k.value().to_string();
-                let val: Vec<String> = bincode::serde::decode_from_slice(
-                    v.value(),
-                    bincode::config::standard(),
-                )?
-                .0;
+                let val: Vec<String> =
+                    bincode::serde::decode_from_slice(v.value(), bincode::config::standard())?.0;
                 lists.insert(key, val);
             }
         }
@@ -1363,11 +1353,8 @@ fn read_snapshot_for_db(
             for item in table.iter()? {
                 let (k, v) = item?;
                 let key = k.value().to_string();
-                let val: HashSet<String> = bincode::serde::decode_from_slice(
-                    v.value(),
-                    bincode::config::standard(),
-                )?
-                .0;
+                let val: HashSet<String> =
+                    bincode::serde::decode_from_slice(v.value(), bincode::config::standard())?.0;
                 sets.insert(key, val);
             }
         }
@@ -1382,11 +1369,8 @@ fn read_snapshot_for_db(
             for item in table.iter()? {
                 let (k, v) = item?;
                 let key = k.value().to_string();
-                let val: HashMap<String, String> = bincode::serde::decode_from_slice(
-                    v.value(),
-                    bincode::config::standard(),
-                )?
-                .0;
+                let val: HashMap<String, String> =
+                    bincode::serde::decode_from_slice(v.value(), bincode::config::standard())?.0;
                 hashes.insert(key, val);
             }
         }
@@ -1401,11 +1385,8 @@ fn read_snapshot_for_db(
             for item in table.iter()? {
                 let (k, v) = item?;
                 let key = k.value().to_string();
-                let val: SortedSet = bincode::serde::decode_from_slice(
-                    v.value(),
-                    bincode::config::standard(),
-                )?
-                .0;
+                let val: SortedSet =
+                    bincode::serde::decode_from_slice(v.value(), bincode::config::standard())?.0;
                 sorted_sets.insert(key, val);
             }
         }
@@ -1736,14 +1717,12 @@ mod tests {
         let dir_path = dir.path().to_str().unwrap().to_string();
 
         let server = RedisServer::new();
-        server
-            .databases[0]
+        server.databases[0]
             .strings
             .write()
             .await
             .insert("k1".into(), "v1".into());
-        server
-            .databases[0]
+        server.databases[0]
             .lists
             .write()
             .await
@@ -1761,13 +1740,15 @@ mod tests {
         let server2 = RedisServer::new();
         server2.load_snapshot_from_dir(&dir_path).await.unwrap();
 
-        assert_eq!(server2.databases[0].strings.read().await.get("k1").unwrap(), "v1");
+        assert_eq!(
+            server2.databases[0].strings.read().await.get("k1").unwrap(),
+            "v1"
+        );
         assert_eq!(
             server2.databases[0].lists.read().await.get("l1").unwrap(),
             &vec!["a".to_string(), "b".to_string()]
         );
-        assert!(server2
-            .databases[0]
+        assert!(server2.databases[0]
             .sets
             .read()
             .await
@@ -1814,21 +1795,22 @@ mod tests {
     #[tokio::test]
     async fn test_clone_shares_state() {
         let server = RedisServer::new();
-        server
-            .databases[0]
+        server.databases[0]
             .strings
             .write()
             .await
             .insert("k".into(), "v".into());
         let cloned = server.clone();
-        assert_eq!(cloned.databases[0].strings.read().await.get("k").unwrap(), "v");
+        assert_eq!(
+            cloned.databases[0].strings.read().await.get("k").unwrap(),
+            "v"
+        );
     }
 
     #[tokio::test]
     async fn test_build_snapshot() {
         let server = RedisServer::new();
-        server
-            .databases[0]
+        server.databases[0]
             .strings
             .write()
             .await
@@ -1895,8 +1877,7 @@ mod tests {
         );
         let mut zset = SortedSet::new();
         zset.insert("member1".to_string(), 1.0);
-        server
-            .databases[0]
+        server.databases[0]
             .sorted_sets
             .write()
             .await
@@ -1911,8 +1892,7 @@ mod tests {
         server2.load_snapshot_from_dir(&dir_path).await.unwrap();
 
         assert_eq!(
-            server2
-                .databases[0]
+            server2.databases[0]
                 .hashes
                 .read()
                 .await
@@ -1922,7 +1902,11 @@ mod tests {
                 .unwrap(),
             "val1"
         );
-        assert!(server2.databases[0].sorted_sets.read().await.contains_key("z1"));
+        assert!(server2.databases[0]
+            .sorted_sets
+            .read()
+            .await
+            .contains_key("z1"));
     }
 
     #[tokio::test]
@@ -1931,8 +1915,7 @@ mod tests {
         let dir_path = dir.path().to_str().unwrap().to_string();
 
         let server = RedisServer::new();
-        server
-            .databases[0]
+        server.databases[0]
             .strings
             .write()
             .await
@@ -1950,7 +1933,11 @@ mod tests {
         let server2 = RedisServer::new();
         server2.load_snapshot_from_dir(&dir_path).await.unwrap();
 
-        assert!(server2.databases[0].expirations.read().await.contains_key("k1"));
+        assert!(server2.databases[0]
+            .expirations
+            .read()
+            .await
+            .contains_key("k1"));
     }
 
     #[tokio::test]
@@ -2086,7 +2073,11 @@ mod tests {
         let mut stream = connect(addr).await;
         let resp = send_command(&mut stream, &["SELECT", "16"]).await;
         assert!(resp.contains("ERR"), "Expected ERR but got: {}", resp);
-        assert!(resp.contains("out of range"), "Expected 'out of range' but got: {}", resp);
+        assert!(
+            resp.contains("out of range"),
+            "Expected 'out of range' but got: {}",
+            resp
+        );
     }
 
     #[tokio::test]
@@ -2117,8 +2108,14 @@ mod tests {
         let server2 = RedisServer::new();
         server2.load_snapshot_from_dir(&dir_path).await.unwrap();
 
-        assert_eq!(server2.databases[0].strings.read().await.get("k0").unwrap(), "v0");
-        assert_eq!(server2.databases[3].strings.read().await.get("k3").unwrap(), "v3");
+        assert_eq!(
+            server2.databases[0].strings.read().await.get("k0").unwrap(),
+            "v0"
+        );
+        assert_eq!(
+            server2.databases[3].strings.read().await.get("k3").unwrap(),
+            "v3"
+        );
         // DB 1 should be empty
         assert!(server2.databases[1].strings.read().await.is_empty());
     }

@@ -47,8 +47,8 @@ impl HttpServer {
                     .map(|(idx, snap)| (idx.to_string(), snap))
                     .collect();
                 // Always include DB 0 for backward compatibility
-                map.entry("0".to_string()).or_insert_with(|| {
-                    chabi_core::storage::Snapshot {
+                map.entry("0".to_string())
+                    .or_insert_with(|| chabi_core::storage::Snapshot {
                         strings: Default::default(),
                         lists: Default::default(),
                         sets: Default::default(),
@@ -56,8 +56,7 @@ impl HttpServer {
                         sorted_sets: Default::default(),
                         hll: Default::default(),
                         expirations_epoch_secs: Default::default(),
-                    }
-                });
+                    });
                 match serde_json::to_vec_pretty(&map) {
                     Ok(body) => {
                         let headers = format!(

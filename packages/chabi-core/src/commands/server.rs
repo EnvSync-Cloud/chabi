@@ -33,7 +33,8 @@ impl CommandHandler for InfoCommand {
         let set_count = self.store.sets.read().await.len();
         let sorted_set_count = self.store.sorted_sets.read().await.len();
         let hll_count = self.store.hll.read().await.len();
-        let total_keys = string_count + hash_count + list_count + set_count + sorted_set_count + hll_count;
+        let total_keys =
+            string_count + hash_count + list_count + set_count + sorted_set_count + hll_count;
         let info = format!(
             "# Server\r\nredis_version:7.0.0\r\nredis_mode:standalone\r\nprocess_id:{}\r\n# Keyspace\r\ndb0:keys={},expires=0,avg_ttl=0\r\n",
             std::process::id(),
