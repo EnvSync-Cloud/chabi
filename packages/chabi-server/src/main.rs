@@ -126,3 +126,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_bind_host_default() {
+        // Clear BIND_HOST to get the default
+        env::remove_var("BIND_HOST");
+        let result = parse_bind_host();
+        assert_eq!(result, [127, 0, 0, 1]);
+    }
+
+    #[test]
+    fn test_parse_bind_host_custom() {
+        env::set_var("BIND_HOST", "0.0.0.0");
+        let result = parse_bind_host();
+        assert_eq!(result, [0, 0, 0, 0]);
+        env::remove_var("BIND_HOST");
+    }
+
+    #[test]
+    fn test_parse_bind_host_invalid() {
+        env::set_var("BIND_HOST", "not-an-ip");
+        let result = parse_bind_host();
+        assert_eq!(result, [127, 0, 0, 1]); // fallback
+        env::remove_var("BIND_HOST");
+    }
+
+    #[test]
+    fn test_parse_bind_host_partial() {
+        env::set_var("BIND_HOST", "192.168.1");
+        let result = parse_bind_host();
+        assert_eq!(result, [127, 0, 0, 1]); // fallback - only 3 parts
+        env::remove_var("BIND_HOST");
+    }
+}
