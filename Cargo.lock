@@ -280,10 +280,12 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chabi-core",
+ "http-body-util",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tower",
  "tracing",
 ]
 
@@ -291,6 +293,7 @@ dependencies = [
 name = "chabi-redis-handler"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "chabi-core",
  "futures",
@@ -312,6 +315,7 @@ dependencies = [
  "redb",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
