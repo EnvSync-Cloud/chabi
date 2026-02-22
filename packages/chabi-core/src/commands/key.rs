@@ -1176,7 +1176,7 @@ mod tests {
         let cmd = KeysCommand::new(store);
         let resp = cmd.execute(vec![bulk("*")]).await.unwrap();
         let arr = unwrap_array(resp);
-        let mut keys: Vec<String> = arr.into_iter().map(|v| unwrap_bulk(v)).collect();
+        let mut keys: Vec<String> = arr.into_iter().map(unwrap_bulk).collect();
         keys.sort();
         assert_eq!(keys, vec!["bar", "baz", "foo"]);
     }
@@ -1198,7 +1198,7 @@ mod tests {
         let cmd = KeysCommand::new(store);
         let resp = cmd.execute(vec![bulk("h?llo")]).await.unwrap();
         let arr = unwrap_array(resp);
-        let mut keys: Vec<String> = arr.into_iter().map(|v| unwrap_bulk(v)).collect();
+        let mut keys: Vec<String> = arr.into_iter().map(unwrap_bulk).collect();
         keys.sort();
         assert_eq!(keys, vec!["hallo", "hello", "hxllo"]);
     }
@@ -1511,7 +1511,7 @@ mod tests {
 
         // Keys returned
         let keys_arr = unwrap_array(outer[1].clone());
-        let mut keys: Vec<String> = keys_arr.into_iter().map(|v| unwrap_bulk(v)).collect();
+        let mut keys: Vec<String> = keys_arr.into_iter().map(unwrap_bulk).collect();
         keys.sort();
         assert_eq!(keys, vec!["a", "b", "c"]);
     }

@@ -609,7 +609,7 @@ impl RedisServer {
     }
 
     pub fn start_snapshot_task(&self, dir: String, interval: Duration) {
-        let databases: Vec<DataStore> = self.databases.iter().cloned().collect();
+        let databases: Vec<DataStore> = self.databases.to_vec();
         tokio::spawn(async move {
             loop {
                 sleep(interval).await;
@@ -1460,16 +1460,11 @@ mod tests {
 
         let server_clone = Arc::clone(&server);
         tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((socket, _)) => {
-                        let srv = server_clone.clone();
-                        tokio::spawn(async move {
-                            let _ = srv.handle_connection(socket).await;
-                        });
-                    }
-                    Err(_) => break,
-                }
+            while let Ok((socket, _)) = listener.accept().await {
+                let srv = server_clone.clone();
+                tokio::spawn(async move {
+                    let _ = srv.handle_connection(socket).await;
+                });
             }
         });
 

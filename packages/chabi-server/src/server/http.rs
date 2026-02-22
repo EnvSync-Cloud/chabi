@@ -132,16 +132,11 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((socket, _)) => {
-                        let srv = http_server.clone();
-                        tokio::spawn(async move {
-                            let _ = srv.handle_connection(socket).await;
-                        });
-                    }
-                    Err(_) => break,
-                }
+            while let Ok((socket, _)) = listener.accept().await {
+                let srv = http_server.clone();
+                tokio::spawn(async move {
+                    let _ = srv.handle_connection(socket).await;
+                });
             }
         });
 
@@ -157,15 +152,11 @@ mod tests {
         // The HTTP handler reads, writes response, then the function returns and
         // the connection is dropped. Read until EOF to get the full response.
         let mut result = Vec::new();
-        match tokio::time::timeout(
+        let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             stream.read_to_end(&mut result),
         )
-        .await
-        {
-            Ok(Ok(_)) => {}
-            _ => {}
-        }
+        .await;
         String::from_utf8_lossy(&result).to_string()
     }
 

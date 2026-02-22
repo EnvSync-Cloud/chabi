@@ -436,14 +436,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_ping_default() {
-        let cmd = PingCommand::default();
+        let cmd = PingCommand;
         let r = cmd.execute(vec![]).await.unwrap();
         assert_eq!(r, RespValue::SimpleString("PONG".to_string()));
     }
 
     #[tokio::test]
     async fn test_echo_default() {
-        let cmd = EchoCommand::default();
+        let cmd = EchoCommand;
         let r = cmd.execute(vec![]).await.unwrap();
         assert!(matches!(r, RespValue::Error(_)));
     }

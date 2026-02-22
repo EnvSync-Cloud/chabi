@@ -442,14 +442,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_default() {
-        let cmd = SaveCommand::default();
+        let cmd = SaveCommand;
         let r = cmd.execute(vec![]).await.unwrap();
         assert_eq!(r, RespValue::SimpleString("OK".to_string()));
     }
 
     #[tokio::test]
     async fn test_bgsave_default() {
-        let cmd = BgSaveCommand::default();
+        let cmd = BgSaveCommand;
         let r = cmd.execute(vec![]).await.unwrap();
         assert_eq!(
             r,
@@ -459,7 +459,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_time_default() {
-        let cmd = TimeCommand::default();
+        let cmd = TimeCommand;
         let r = cmd.execute(vec![]).await.unwrap();
         match r {
             RespValue::Array(Some(arr)) => assert_eq!(arr.len(), 2),
@@ -469,14 +469,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_config_default() {
-        let cmd = ConfigCommand::default();
+        let cmd = ConfigCommand;
         let r = cmd.execute(vec![bulk("GET"), bulk("x")]).await.unwrap();
         assert!(matches!(r, RespValue::Array(Some(_))));
     }
 
     #[tokio::test]
     async fn test_command_default() {
-        let cmd = CommandCommand::default();
+        let cmd = CommandCommand;
         let r = cmd.execute(vec![]).await.unwrap();
         assert!(matches!(r, RespValue::Array(Some(_))));
     }
