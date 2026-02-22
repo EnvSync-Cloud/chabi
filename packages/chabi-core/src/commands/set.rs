@@ -1,19 +1,52 @@
 use crate::commands::CommandHandler;
 use crate::resp::RespValue;
+use crate::storage::DataStore;
 use crate::Result;
-use crate::RwLock;
 use async_trait::async_trait;
-use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::Arc;
+
+fn extract_string(val: &RespValue) -> Option<String> {
+    match val {
+        RespValue::BulkString(Some(bytes)) => Some(String::from_utf8_lossy(bytes).to_string()),
+        _ => None,
+    }
+}
+
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let txt: Vec<char> = text.chars().collect();
+    let (plen, tlen) = (pat.len(), txt.len());
+    let mut dp = vec![vec![false; tlen + 1]; plen + 1];
+    dp[0][0] = true;
+
+    for i in 1..=plen {
+        if pat[i - 1] == '*' {
+            dp[i][0] = dp[i - 1][0];
+        }
+    }
+
+    for i in 1..=plen {
+        for j in 1..=tlen {
+            if pat[i - 1] == '*' {
+                dp[i][j] = dp[i - 1][j] || dp[i][j - 1];
+            } else if pat[i - 1] == '?' || pat[i - 1] == txt[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1];
+            }
+        }
+    }
+
+    dp[plen][tlen]
+}
+
+// ─── SADD ───────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct SAddCommand {
-    store: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    store: DataStore,
 }
 
 impl SAddCommand {
-    pub fn new(store: Arc<RwLock<HashMap<String, HashSet<String>>>>) -> Self {
+    pub fn new(store: DataStore) -> Self {
         SAddCommand { store }
     }
 }
@@ -32,7 +65,7 @@ impl CommandHandler for SAddCommand {
             _ => return Ok(RespValue::Error("ERR invalid key".to_string())),
         };
 
-        let mut store = self.store.write().await;
+        let mut store = self.store.sets.write().await;
         let set = store.entry(key).or_insert_with(HashSet::new);
         let mut added = 0;
 
@@ -51,13 +84,15 @@ impl CommandHandler for SAddCommand {
     }
 }
 
+// ─── SMEMBERS ───────────────────────────────────────────────────────────────
+
 #[derive(Clone)]
 pub struct SMembersCommand {
-    store: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    store: DataStore,
 }
 
 impl SMembersCommand {
-    pub fn new(store: Arc<RwLock<HashMap<String, HashSet<String>>>>) -> Self {
+    pub fn new(store: DataStore) -> Self {
         SMembersCommand { store }
     }
 }
@@ -76,7 +111,7 @@ impl CommandHandler for SMembersCommand {
             _ => return Ok(RespValue::Error("ERR invalid key".to_string())),
         };
 
-        let store = self.store.read().await;
+        let store = self.store.sets.read().await;
 
         match store.get(&key) {
             Some(set) => {
@@ -91,13 +126,15 @@ impl CommandHandler for SMembersCommand {
     }
 }
 
+// ─── SISMEMBER ──────────────────────────────────────────────────────────────
+
 #[derive(Clone)]
 pub struct SIsMemberCommand {
-    store: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    store: DataStore,
 }
 
 impl SIsMemberCommand {
-    pub fn new(store: Arc<RwLock<HashMap<String, HashSet<String>>>>) -> Self {
+    pub fn new(store: DataStore) -> Self {
         SIsMemberCommand { store }
     }
 }
@@ -121,7 +158,7 @@ impl CommandHandler for SIsMemberCommand {
             _ => return Ok(RespValue::Error("ERR invalid member".to_string())),
         };
 
-        let store = self.store.read().await;
+        let store = self.store.sets.read().await;
 
         match store.get(&key) {
             Some(set) => Ok(RespValue::Integer(if set.contains(&member) {
@@ -134,13 +171,15 @@ impl CommandHandler for SIsMemberCommand {
     }
 }
 
+// ─── SCARD ──────────────────────────────────────────────────────────────────
+
 #[derive(Clone)]
 pub struct SCardCommand {
-    store: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    store: DataStore,
 }
 
 impl SCardCommand {
-    pub fn new(store: Arc<RwLock<HashMap<String, HashSet<String>>>>) -> Self {
+    pub fn new(store: DataStore) -> Self {
         SCardCommand { store }
     }
 }
@@ -159,7 +198,7 @@ impl CommandHandler for SCardCommand {
             _ => return Ok(RespValue::Error("ERR invalid key".to_string())),
         };
 
-        let store = self.store.read().await;
+        let store = self.store.sets.read().await;
 
         match store.get(&key) {
             Some(set) => Ok(RespValue::Integer(set.len() as i64)),
@@ -168,13 +207,15 @@ impl CommandHandler for SCardCommand {
     }
 }
 
+// ─── SREM ───────────────────────────────────────────────────────────────────
+
 #[derive(Clone)]
 pub struct SRemCommand {
-    store: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    store: DataStore,
 }
 
 impl SRemCommand {
-    pub fn new(store: Arc<RwLock<HashMap<String, HashSet<String>>>>) -> Self {
+    pub fn new(store: DataStore) -> Self {
         SRemCommand { store }
     }
 }
@@ -193,7 +234,7 @@ impl CommandHandler for SRemCommand {
             _ => return Ok(RespValue::Error("ERR invalid key".to_string())),
         };
 
-        let mut store = self.store.write().await;
+        let mut store = self.store.sets.write().await;
 
         match store.get_mut(&key) {
             Some(set) => {
@@ -215,5 +256,1652 @@ impl CommandHandler for SRemCommand {
             }
             None => Ok(RespValue::Integer(0)),
         }
+    }
+}
+
+// ─── SPOP ───────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SPopCommand {
+    store: DataStore,
+}
+
+impl SPopCommand {
+    pub fn new(store: DataStore) -> Self {
+        SPopCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SPopCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        if args.is_empty() || args.len() > 2 {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'spop' command".to_string(),
+            ));
+        }
+
+        let key = match extract_string(&args[0]) {
+            Some(k) => k,
+            None => return Ok(RespValue::Error("ERR invalid key".to_string())),
+        };
+
+        let count = if args.len() == 2 {
+            match extract_string(&args[1]) {
+                Some(s) => match s.parse::<i64>() {
+                    Ok(n) if n >= 0 => Some(n as usize),
+                    _ => {
+                        return Ok(RespValue::Error(
+                            "ERR value is not an integer or out of range".to_string(),
+                        ))
+                    }
+                },
+                None => return Ok(RespValue::Error("ERR invalid count".to_string())),
+            }
+        } else {
+            None
+        };
+
+        let mut store = self.store.sets.write().await;
+
+        let set = match store.get_mut(&key) {
+            Some(s) => s,
+            None => {
+                return if count.is_some() {
+                    Ok(RespValue::Array(Some(vec![])))
+                } else {
+                    Ok(RespValue::BulkString(None))
+                };
+            }
+        };
+
+        if set.is_empty() {
+            return if count.is_some() {
+                Ok(RespValue::Array(Some(vec![])))
+            } else {
+                Ok(RespValue::BulkString(None))
+            };
+        }
+
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+
+        match count {
+            Some(n) => {
+                let mut members: Vec<String> = set.iter().cloned().collect();
+                members.shuffle(&mut rng);
+                let to_pop = n.min(members.len());
+                let popped: Vec<String> = members[..to_pop].to_vec();
+                for m in &popped {
+                    set.remove(m);
+                }
+                if set.is_empty() {
+                    store.remove(&key);
+                }
+                let result: Vec<RespValue> = popped
+                    .into_iter()
+                    .map(|s| RespValue::BulkString(Some(s.into_bytes())))
+                    .collect();
+                Ok(RespValue::Array(Some(result)))
+            }
+            None => {
+                let members: Vec<String> = set.iter().cloned().collect();
+                let chosen = members.choose(&mut rng).unwrap().clone();
+                set.remove(&chosen);
+                if set.is_empty() {
+                    store.remove(&key);
+                }
+                Ok(RespValue::BulkString(Some(chosen.into_bytes())))
+            }
+        }
+    }
+}
+
+// ─── SRANDMEMBER ────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SRandMemberCommand {
+    store: DataStore,
+}
+
+impl SRandMemberCommand {
+    pub fn new(store: DataStore) -> Self {
+        SRandMemberCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SRandMemberCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        if args.is_empty() || args.len() > 2 {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'srandmember' command".to_string(),
+            ));
+        }
+
+        let key = match extract_string(&args[0]) {
+            Some(k) => k,
+            None => return Ok(RespValue::Error("ERR invalid key".to_string())),
+        };
+
+        let count = if args.len() == 2 {
+            match extract_string(&args[1]) {
+                Some(s) => match s.parse::<i64>() {
+                    Ok(n) => Some(n),
+                    Err(_) => {
+                        return Ok(RespValue::Error(
+                            "ERR value is not an integer or out of range".to_string(),
+                        ))
+                    }
+                },
+                None => return Ok(RespValue::Error("ERR invalid count".to_string())),
+            }
+        } else {
+            None
+        };
+
+        let store = self.store.sets.read().await;
+
+        let set = match store.get(&key) {
+            Some(s) => s,
+            None => {
+                return if count.is_some() {
+                    Ok(RespValue::Array(Some(vec![])))
+                } else {
+                    Ok(RespValue::BulkString(None))
+                };
+            }
+        };
+
+        if set.is_empty() {
+            return if count.is_some() {
+                Ok(RespValue::Array(Some(vec![])))
+            } else {
+                Ok(RespValue::BulkString(None))
+            };
+        }
+
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+        let members: Vec<String> = set.iter().cloned().collect();
+
+        match count {
+            Some(n) if n < 0 => {
+                // Negative count: allow duplicates, return abs(n) elements
+                let abs_n = n.unsigned_abs() as usize;
+                let mut result = Vec::with_capacity(abs_n);
+                for _ in 0..abs_n {
+                    let chosen = members.choose(&mut rng).unwrap().clone();
+                    result.push(RespValue::BulkString(Some(chosen.into_bytes())));
+                }
+                Ok(RespValue::Array(Some(result)))
+            }
+            Some(n) => {
+                // Positive count: unique elements, up to set size
+                let n = n as usize;
+                let take = n.min(members.len());
+                let mut shuffled = members.clone();
+                shuffled.shuffle(&mut rng);
+                let result: Vec<RespValue> = shuffled[..take]
+                    .iter()
+                    .map(|s| RespValue::BulkString(Some(s.as_bytes().to_vec())))
+                    .collect();
+                Ok(RespValue::Array(Some(result)))
+            }
+            None => {
+                let chosen = members.choose(&mut rng).unwrap().clone();
+                Ok(RespValue::BulkString(Some(chosen.into_bytes())))
+            }
+        }
+    }
+}
+
+// ─── SMOVE ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SMoveCommand {
+    store: DataStore,
+}
+
+impl SMoveCommand {
+    pub fn new(store: DataStore) -> Self {
+        SMoveCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SMoveCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        if args.len() != 3 {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'smove' command".to_string(),
+            ));
+        }
+
+        let source = match extract_string(&args[0]) {
+            Some(k) => k,
+            None => return Ok(RespValue::Error("ERR invalid source key".to_string())),
+        };
+
+        let dest = match extract_string(&args[1]) {
+            Some(k) => k,
+            None => return Ok(RespValue::Error("ERR invalid destination key".to_string())),
+        };
+
+        let member = match extract_string(&args[2]) {
+            Some(m) => m,
+            None => return Ok(RespValue::Error("ERR invalid member".to_string())),
+        };
+
+        let mut store = self.store.sets.write().await;
+
+        // Check if source set exists and contains the member
+        let removed = match store.get_mut(&source) {
+            Some(src_set) => {
+                if src_set.remove(&member) {
+                    if src_set.is_empty() {
+                        store.remove(&source);
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        };
+
+        if removed {
+            let dest_set = store.entry(dest).or_insert_with(HashSet::new);
+            dest_set.insert(member);
+            Ok(RespValue::Integer(1))
+        } else {
+            Ok(RespValue::Integer(0))
+        }
+    }
+}
+
+// ─── SINTER ─────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SInterCommand {
+    store: DataStore,
+}
+
+impl SInterCommand {
+    pub fn new(store: DataStore) -> Self {
+        SInterCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SInterCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        if args.is_empty() {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'sinter' command".to_string(),
+            ));
+        }
+
+        let keys: Vec<String> = args
+            .iter()
+            .map(extract_string)
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
+
+        if keys.len() != args.len() {
+            return Ok(RespValue::Error("ERR invalid key".to_string()));
+        }
+
+        let store = self.store.sets.read().await;
+        let empty_set = HashSet::new();
+
+        let mut result: Option<HashSet<String>> = None;
+        for key in &keys {
+            let set = store.get(key).unwrap_or(&empty_set);
+            result = Some(match result {
+                Some(acc) => acc.intersection(set).cloned().collect(),
+                None => set.clone(),
+            });
+        }
+
+        let result_set = result.unwrap_or_default();
+        let members: Vec<RespValue> = result_set
+            .into_iter()
+            .map(|s| RespValue::BulkString(Some(s.into_bytes())))
+            .collect();
+
+        Ok(RespValue::Array(Some(members)))
+    }
+}
+
+// ─── SUNION ─────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SUnionCommand {
+    store: DataStore,
+}
+
+impl SUnionCommand {
+    pub fn new(store: DataStore) -> Self {
+        SUnionCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SUnionCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        if args.is_empty() {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'sunion' command".to_string(),
+            ));
+        }
+
+        let keys: Vec<String> = args
+            .iter()
+            .map(extract_string)
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
+
+        if keys.len() != args.len() {
+            return Ok(RespValue::Error("ERR invalid key".to_string()));
+        }
+
+        let store = self.store.sets.read().await;
+        let empty_set = HashSet::new();
+
+        let mut result = HashSet::new();
+        for key in &keys {
+            let set = store.get(key).unwrap_or(&empty_set);
+            for member in set {
+                result.insert(member.clone());
+            }
+        }
+
+        let members: Vec<RespValue> = result
+            .into_iter()
+            .map(|s| RespValue::BulkString(Some(s.into_bytes())))
+            .collect();
+
+        Ok(RespValue::Array(Some(members)))
+    }
+}
+
+// ─── SDIFF ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SDiffCommand {
+    store: DataStore,
+}
+
+impl SDiffCommand {
+    pub fn new(store: DataStore) -> Self {
+        SDiffCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SDiffCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        if args.is_empty() {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'sdiff' command".to_string(),
+            ));
+        }
+
+        let keys: Vec<String> = args
+            .iter()
+            .map(extract_string)
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
+
+        if keys.len() != args.len() {
+            return Ok(RespValue::Error("ERR invalid key".to_string()));
+        }
+
+        let store = self.store.sets.read().await;
+        let empty_set = HashSet::new();
+
+        let first_set = store.get(&keys[0]).unwrap_or(&empty_set).clone();
+        let mut result = first_set;
+
+        for key in keys.iter().skip(1) {
+            let set = store.get(key).unwrap_or(&empty_set);
+            result = result.difference(set).cloned().collect();
+        }
+
+        let members: Vec<RespValue> = result
+            .into_iter()
+            .map(|s| RespValue::BulkString(Some(s.into_bytes())))
+            .collect();
+
+        Ok(RespValue::Array(Some(members)))
+    }
+}
+
+// ─── SINTERSTORE ────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SInterStoreCommand {
+    store: DataStore,
+}
+
+impl SInterStoreCommand {
+    pub fn new(store: DataStore) -> Self {
+        SInterStoreCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SInterStoreCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        if args.len() < 2 {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'sinterstore' command".to_string(),
+            ));
+        }
+
+        let dest = match extract_string(&args[0]) {
+            Some(k) => k,
+            None => return Ok(RespValue::Error("ERR invalid destination key".to_string())),
+        };
+
+        let keys: Vec<String> = args[1..]
+            .iter()
+            .map(extract_string)
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
+
+        if keys.len() != args.len() - 1 {
+            return Ok(RespValue::Error("ERR invalid key".to_string()));
+        }
+
+        let mut store = self.store.sets.write().await;
+        let empty_set = HashSet::new();
+
+        let mut result: Option<HashSet<String>> = None;
+        for key in &keys {
+            let set = store.get(key).unwrap_or(&empty_set);
+            result = Some(match result {
+                Some(acc) => acc.intersection(set).cloned().collect(),
+                None => set.clone(),
+            });
+        }
+
+        let result_set = result.unwrap_or_default();
+        let count = result_set.len() as i64;
+
+        if result_set.is_empty() {
+            store.remove(&dest);
+        } else {
+            store.insert(dest, result_set);
+        }
+
+        Ok(RespValue::Integer(count))
+    }
+}
+
+// ─── SUNIONSTORE ────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SUnionStoreCommand {
+    store: DataStore,
+}
+
+impl SUnionStoreCommand {
+    pub fn new(store: DataStore) -> Self {
+        SUnionStoreCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SUnionStoreCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        if args.len() < 2 {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'sunionstore' command".to_string(),
+            ));
+        }
+
+        let dest = match extract_string(&args[0]) {
+            Some(k) => k,
+            None => return Ok(RespValue::Error("ERR invalid destination key".to_string())),
+        };
+
+        let keys: Vec<String> = args[1..]
+            .iter()
+            .map(extract_string)
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
+
+        if keys.len() != args.len() - 1 {
+            return Ok(RespValue::Error("ERR invalid key".to_string()));
+        }
+
+        let mut store = self.store.sets.write().await;
+        let empty_set = HashSet::new();
+
+        let mut result = HashSet::new();
+        for key in &keys {
+            let set = store.get(key).unwrap_or(&empty_set);
+            for member in set {
+                result.insert(member.clone());
+            }
+        }
+
+        let count = result.len() as i64;
+
+        if result.is_empty() {
+            store.remove(&dest);
+        } else {
+            store.insert(dest, result);
+        }
+
+        Ok(RespValue::Integer(count))
+    }
+}
+
+// ─── SDIFFSTORE ─────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SDiffStoreCommand {
+    store: DataStore,
+}
+
+impl SDiffStoreCommand {
+    pub fn new(store: DataStore) -> Self {
+        SDiffStoreCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SDiffStoreCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        if args.len() < 2 {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'sdiffstore' command".to_string(),
+            ));
+        }
+
+        let dest = match extract_string(&args[0]) {
+            Some(k) => k,
+            None => return Ok(RespValue::Error("ERR invalid destination key".to_string())),
+        };
+
+        let keys: Vec<String> = args[1..]
+            .iter()
+            .map(extract_string)
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
+
+        if keys.len() != args.len() - 1 {
+            return Ok(RespValue::Error("ERR invalid key".to_string()));
+        }
+
+        let mut store = self.store.sets.write().await;
+        let empty_set = HashSet::new();
+
+        let first_set = store.get(&keys[0]).unwrap_or(&empty_set).clone();
+        let mut result = first_set;
+
+        for key in keys.iter().skip(1) {
+            let set = store.get(key).unwrap_or(&empty_set);
+            result = result.difference(set).cloned().collect();
+        }
+
+        let count = result.len() as i64;
+
+        if result.is_empty() {
+            store.remove(&dest);
+        } else {
+            store.insert(dest, result);
+        }
+
+        Ok(RespValue::Integer(count))
+    }
+}
+
+// ─── SSCAN ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SScanCommand {
+    store: DataStore,
+}
+
+impl SScanCommand {
+    pub fn new(store: DataStore) -> Self {
+        SScanCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SScanCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        // SSCAN key cursor [MATCH pattern] [COUNT count]
+        if args.len() < 2 {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'sscan' command".to_string(),
+            ));
+        }
+
+        let key = match extract_string(&args[0]) {
+            Some(k) => k,
+            None => return Ok(RespValue::Error("ERR invalid key".to_string())),
+        };
+
+        let cursor = match extract_string(&args[1]) {
+            Some(s) => match s.parse::<usize>() {
+                Ok(c) => c,
+                Err(_) => return Ok(RespValue::Error("ERR invalid cursor".to_string())),
+            },
+            None => return Ok(RespValue::Error("ERR invalid cursor".to_string())),
+        };
+
+        let mut pattern: Option<String> = None;
+        let mut count: usize = 10;
+
+        let mut i = 2;
+        while i < args.len() {
+            let opt = match extract_string(&args[i]) {
+                Some(s) => s.to_uppercase(),
+                None => return Ok(RespValue::Error("ERR syntax error".to_string())),
+            };
+
+            match opt.as_str() {
+                "MATCH" => {
+                    i += 1;
+                    if i >= args.len() {
+                        return Ok(RespValue::Error("ERR syntax error".to_string()));
+                    }
+                    pattern = extract_string(&args[i]);
+                    if pattern.is_none() {
+                        return Ok(RespValue::Error("ERR syntax error".to_string()));
+                    }
+                }
+                "COUNT" => {
+                    i += 1;
+                    if i >= args.len() {
+                        return Ok(RespValue::Error("ERR syntax error".to_string()));
+                    }
+                    match extract_string(&args[i]) {
+                        Some(s) => match s.parse::<usize>() {
+                            Ok(c) if c > 0 => count = c,
+                            _ => {
+                                return Ok(RespValue::Error(
+                                    "ERR value is not an integer or out of range".to_string(),
+                                ))
+                            }
+                        },
+                        None => {
+                            return Ok(RespValue::Error(
+                                "ERR value is not an integer or out of range".to_string(),
+                            ))
+                        }
+                    }
+                }
+                _ => return Ok(RespValue::Error("ERR syntax error".to_string())),
+            }
+            i += 1;
+        }
+
+        let store = self.store.sets.read().await;
+
+        let set = match store.get(&key) {
+            Some(s) => s,
+            None => {
+                // Empty set: return cursor 0 and empty array
+                let cursor_val = RespValue::BulkString(Some(b"0".to_vec()));
+                let members = RespValue::Array(Some(vec![]));
+                return Ok(RespValue::Array(Some(vec![cursor_val, members])));
+            }
+        };
+
+        // Collect all members into a sorted vec for deterministic iteration
+        let mut all_members: Vec<String> = set.iter().cloned().collect();
+        all_members.sort();
+
+        // Filter by pattern if provided
+        let filtered: Vec<String> = if let Some(ref pat) = pattern {
+            all_members
+                .into_iter()
+                .filter(|m| glob_match(pat, m))
+                .collect()
+        } else {
+            all_members
+        };
+
+        let total = filtered.len();
+
+        if total == 0 || cursor >= total {
+            let cursor_val = RespValue::BulkString(Some(b"0".to_vec()));
+            let members = RespValue::Array(Some(vec![]));
+            return Ok(RespValue::Array(Some(vec![cursor_val, members])));
+        }
+
+        let end = (cursor + count).min(total);
+        let batch: Vec<RespValue> = filtered[cursor..end]
+            .iter()
+            .map(|s| RespValue::BulkString(Some(s.as_bytes().to_vec())))
+            .collect();
+
+        let next_cursor = if end >= total { 0 } else { end };
+        let cursor_val = RespValue::BulkString(Some(next_cursor.to_string().into_bytes()));
+        let members = RespValue::Array(Some(batch));
+
+        Ok(RespValue::Array(Some(vec![cursor_val, members])))
+    }
+}
+
+// ─── SMISMEMBER ─────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SMisMemberCommand {
+    store: DataStore,
+}
+
+impl SMisMemberCommand {
+    pub fn new(store: DataStore) -> Self {
+        SMisMemberCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SMisMemberCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        if args.len() < 2 {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'smismember' command".to_string(),
+            ));
+        }
+
+        let key = match extract_string(&args[0]) {
+            Some(k) => k,
+            None => return Ok(RespValue::Error("ERR invalid key".to_string())),
+        };
+
+        let store = self.store.sets.read().await;
+        let empty_set = HashSet::new();
+        let set = store.get(&key).unwrap_or(&empty_set);
+
+        let mut results = Vec::with_capacity(args.len() - 1);
+        for arg in args.iter().skip(1) {
+            match extract_string(arg) {
+                Some(member) => {
+                    results.push(RespValue::Integer(if set.contains(&member) {
+                        1
+                    } else {
+                        0
+                    }));
+                }
+                None => return Ok(RespValue::Error("ERR invalid member".to_string())),
+            }
+        }
+
+        Ok(RespValue::Array(Some(results)))
+    }
+}
+
+// ─── SINTERCARD ─────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct SInterCardCommand {
+    store: DataStore,
+}
+
+impl SInterCardCommand {
+    pub fn new(store: DataStore) -> Self {
+        SInterCardCommand { store }
+    }
+}
+
+#[async_trait]
+impl CommandHandler for SInterCardCommand {
+    async fn execute(&self, args: Vec<RespValue>) -> Result<RespValue> {
+        // SINTERCARD numkeys key [key ...] [LIMIT limit]
+        if args.is_empty() {
+            return Ok(RespValue::Error(
+                "ERR wrong number of arguments for 'sintercard' command".to_string(),
+            ));
+        }
+
+        let numkeys = match extract_string(&args[0]) {
+            Some(s) => match s.parse::<usize>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    return Ok(RespValue::Error(
+                        "ERR numkeys can't be non-positive value".to_string(),
+                    ))
+                }
+            },
+            None => {
+                return Ok(RespValue::Error(
+                    "ERR value is not an integer or out of range".to_string(),
+                ))
+            }
+        };
+
+        if args.len() < 1 + numkeys {
+            return Ok(RespValue::Error(
+                "ERR Number of keys can't be greater than number of args".to_string(),
+            ));
+        }
+
+        let keys: Vec<String> = args[1..1 + numkeys]
+            .iter()
+            .map(extract_string)
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
+
+        if keys.len() != numkeys {
+            return Ok(RespValue::Error("ERR invalid key".to_string()));
+        }
+
+        let mut limit: usize = 0; // 0 means no limit
+
+        let mut i = 1 + numkeys;
+        while i < args.len() {
+            let opt = match extract_string(&args[i]) {
+                Some(s) => s.to_uppercase(),
+                None => return Ok(RespValue::Error("ERR syntax error".to_string())),
+            };
+
+            if opt == "LIMIT" {
+                i += 1;
+                if i >= args.len() {
+                    return Ok(RespValue::Error("ERR syntax error".to_string()));
+                }
+                match extract_string(&args[i]) {
+                    Some(s) => match s.parse::<usize>() {
+                        Ok(l) => limit = l,
+                        Err(_) => {
+                            return Ok(RespValue::Error(
+                                "ERR value is not an integer or out of range".to_string(),
+                            ))
+                        }
+                    },
+                    None => {
+                        return Ok(RespValue::Error(
+                            "ERR value is not an integer or out of range".to_string(),
+                        ))
+                    }
+                }
+            } else {
+                return Ok(RespValue::Error("ERR syntax error".to_string()));
+            }
+            i += 1;
+        }
+
+        let store = self.store.sets.read().await;
+        let empty_set = HashSet::new();
+
+        let mut result: Option<HashSet<String>> = None;
+        for key in &keys {
+            let set = store.get(key).unwrap_or(&empty_set);
+            result = Some(match result {
+                Some(acc) => acc.intersection(set).cloned().collect(),
+                None => set.clone(),
+            });
+            // Early termination: if intersection is already empty, no need to continue
+            if let Some(ref r) = result {
+                if r.is_empty() {
+                    return Ok(RespValue::Integer(0));
+                }
+            }
+        }
+
+        let result_set = result.unwrap_or_default();
+        let count = result_set.len() as i64;
+
+        if limit > 0 && count > limit as i64 {
+            Ok(RespValue::Integer(limit as i64))
+        } else {
+            Ok(RespValue::Integer(count))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::CommandHandler;
+
+    fn bulk(s: &str) -> RespValue {
+        RespValue::BulkString(Some(s.as_bytes().to_vec()))
+    }
+
+    /// Helper: extract strings from a RespValue::Array result and return them as a sorted Vec.
+    fn extract_members(resp: &RespValue) -> Vec<String> {
+        match resp {
+            RespValue::Array(Some(arr)) => {
+                let mut v: Vec<String> = arr
+                    .iter()
+                    .filter_map(|r| match r {
+                        RespValue::BulkString(Some(bytes)) => {
+                            Some(String::from_utf8_lossy(bytes).to_string())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                v.sort();
+                v
+            }
+            _ => panic!("expected Array, got {:?}", resp),
+        }
+    }
+
+    // 1. SADD adds members, SMEMBERS returns them
+    #[tokio::test]
+    async fn test_sadd_smembers() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let smembers = SMembersCommand::new(store.clone());
+
+        // SADD myset a b c
+        let result = sadd
+            .execute(vec![bulk("myset"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(3));
+
+        // SMEMBERS myset
+        let result = smembers.execute(vec![bulk("myset")]).await.unwrap();
+        let members = extract_members(&result);
+        assert_eq!(members, vec!["a", "b", "c"]);
+    }
+
+    // 2. SADD returns count of newly added only (duplicates ignored)
+    #[tokio::test]
+    async fn test_sadd_duplicates() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+
+        // Add a, b
+        let result = sadd
+            .execute(vec![bulk("myset"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(2));
+
+        // Add b, c -- b is duplicate
+        let result = sadd
+            .execute(vec![bulk("myset"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+    }
+
+    // 3. SISMEMBER returns 1 for existing member, 0 for non-existing
+    #[tokio::test]
+    async fn test_sismember() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sismember = SIsMemberCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+
+        let result = sismember
+            .execute(vec![bulk("myset"), bulk("a")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        let result = sismember
+            .execute(vec![bulk("myset"), bulk("z")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+
+        // Non-existing key
+        let result = sismember
+            .execute(vec![bulk("nokey"), bulk("a")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+    }
+
+    // 4. SMISMEMBER returns array of 1/0 for each member
+    #[tokio::test]
+    async fn test_smismember() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let smismember = SMisMemberCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        let result = smismember
+            .execute(vec![bulk("myset"), bulk("a"), bulk("z"), bulk("b")])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            RespValue::Array(Some(vec![
+                RespValue::Integer(1),
+                RespValue::Integer(0),
+                RespValue::Integer(1),
+            ]))
+        );
+    }
+
+    // 5. SCARD returns set size
+    #[tokio::test]
+    async fn test_scard() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let scard = SCardCommand::new(store.clone());
+
+        // Empty / non-existing key
+        let result = scard.execute(vec![bulk("myset")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        let result = scard.execute(vec![bulk("myset")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(3));
+    }
+
+    // 6. SREM removes members
+    #[tokio::test]
+    async fn test_srem() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let srem = SRemCommand::new(store.clone());
+        let scard = SCardCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        // Remove a and a non-existing member
+        let result = srem
+            .execute(vec![bulk("myset"), bulk("a"), bulk("z")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        let result = scard.execute(vec![bulk("myset")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(2));
+
+        // Remove from non-existing key
+        let result = srem.execute(vec![bulk("nokey"), bulk("x")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+    }
+
+    // 7. SPOP removes and returns member(s)
+    #[tokio::test]
+    async fn test_spop() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let spop = SPopCommand::new(store.clone());
+        let scard = SCardCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        // SPOP without count -- returns a single BulkString
+        let result = spop.execute(vec![bulk("myset")]).await.unwrap();
+        match &result {
+            RespValue::BulkString(Some(_)) => {} // OK, random element
+            other => panic!("expected BulkString, got {:?}", other),
+        }
+
+        let result = scard.execute(vec![bulk("myset")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(2));
+
+        // SPOP with count
+        let result = spop.execute(vec![bulk("myset"), bulk("2")]).await.unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => assert_eq!(arr.len(), 2),
+            other => panic!("expected Array, got {:?}", other),
+        }
+
+        let result = scard.execute(vec![bulk("myset")]).await.unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+
+        // SPOP on non-existing key (no count) returns nil bulk string
+        let result = spop.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(result, RespValue::BulkString(None));
+    }
+
+    // 8. SRANDMEMBER with positive count returns unique elements
+    #[tokio::test]
+    async fn test_srandmember_positive() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let srandmember = SRandMemberCommand::new(store.clone());
+
+        sadd.execute(vec![
+            bulk("myset"),
+            bulk("a"),
+            bulk("b"),
+            bulk("c"),
+            bulk("d"),
+            bulk("e"),
+        ])
+        .await
+        .unwrap();
+
+        // Positive count less than set size -- returns that many unique elements
+        let result = srandmember
+            .execute(vec![bulk("myset"), bulk("3")])
+            .await
+            .unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 3);
+                // All should be unique
+                let members = extract_members(&result);
+                let unique: HashSet<String> = members.into_iter().collect();
+                assert_eq!(unique.len(), 3);
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+
+        // Positive count greater than set size -- returns all elements
+        let result = srandmember
+            .execute(vec![bulk("myset"), bulk("100")])
+            .await
+            .unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => assert_eq!(arr.len(), 5),
+            other => panic!("expected Array, got {:?}", other),
+        }
+
+        // Without count -- returns a single BulkString
+        let result = srandmember.execute(vec![bulk("myset")]).await.unwrap();
+        match &result {
+            RespValue::BulkString(Some(_)) => {}
+            other => panic!("expected BulkString, got {:?}", other),
+        }
+    }
+
+    // 9. SMOVE between sets
+    #[tokio::test]
+    async fn test_smove() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let smove = SMoveCommand::new(store.clone());
+        let smembers = SMembersCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("src"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("dst"), bulk("x")]).await.unwrap();
+
+        // Move "b" from src to dst
+        let result = smove
+            .execute(vec![bulk("src"), bulk("dst"), bulk("b")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        let src_members = extract_members(&smembers.execute(vec![bulk("src")]).await.unwrap());
+        assert_eq!(src_members, vec!["a", "c"]);
+
+        let dst_members = extract_members(&smembers.execute(vec![bulk("dst")]).await.unwrap());
+        assert_eq!(dst_members, vec!["b", "x"]);
+
+        // Move non-existing member
+        let result = smove
+            .execute(vec![bulk("src"), bulk("dst"), bulk("z")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+    }
+
+    // 10. SINTER of two sets
+    #[tokio::test]
+    async fn test_sinter() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sinter = SInterCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+
+        let result = sinter.execute(vec![bulk("s1"), bulk("s2")]).await.unwrap();
+        let members = extract_members(&result);
+        assert_eq!(members, vec!["b", "c"]);
+
+        // Intersection with non-existing key yields empty
+        let result = sinter
+            .execute(vec![bulk("s1"), bulk("nokey")])
+            .await
+            .unwrap();
+        let members = extract_members(&result);
+        assert!(members.is_empty());
+    }
+
+    // 11. SUNION of two sets
+    #[tokio::test]
+    async fn test_sunion() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sunion = SUnionCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        let result = sunion.execute(vec![bulk("s1"), bulk("s2")]).await.unwrap();
+        let members = extract_members(&result);
+        assert_eq!(members, vec!["a", "b", "c"]);
+    }
+
+    // 12. SDIFF of two sets
+    #[tokio::test]
+    async fn test_sdiff() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sdiff = SDiffCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+
+        let result = sdiff.execute(vec![bulk("s1"), bulk("s2")]).await.unwrap();
+        let members = extract_members(&result);
+        assert_eq!(members, vec!["a"]);
+    }
+
+    // 13. SINTERSTORE stores result
+    #[tokio::test]
+    async fn test_sinterstore() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sinterstore = SInterStoreCommand::new(store.clone());
+        let smembers = SMembersCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+
+        let result = sinterstore
+            .execute(vec![bulk("dest"), bulk("s1"), bulk("s2")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(2));
+
+        let members = extract_members(&smembers.execute(vec![bulk("dest")]).await.unwrap());
+        assert_eq!(members, vec!["b", "c"]);
+    }
+
+    // 14. SUNIONSTORE stores result
+    #[tokio::test]
+    async fn test_sunionstore() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sunionstore = SUnionStoreCommand::new(store.clone());
+        let smembers = SMembersCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+
+        let result = sunionstore
+            .execute(vec![bulk("dest"), bulk("s1"), bulk("s2")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(3));
+
+        let members = extract_members(&smembers.execute(vec![bulk("dest")]).await.unwrap());
+        assert_eq!(members, vec!["a", "b", "c"]);
+    }
+
+    // 15. SDIFFSTORE stores result
+    #[tokio::test]
+    async fn test_sdiffstore() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sdiffstore = SDiffStoreCommand::new(store.clone());
+        let smembers = SMembersCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+
+        let result = sdiffstore
+            .execute(vec![bulk("dest"), bulk("s1"), bulk("s2")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        let members = extract_members(&smembers.execute(vec![bulk("dest")]).await.unwrap());
+        assert_eq!(members, vec!["a"]);
+    }
+
+    // 16. SSCAN basic iteration
+    #[tokio::test]
+    async fn test_sscan() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sscan = SScanCommand::new(store.clone());
+
+        sadd.execute(vec![
+            bulk("myset"),
+            bulk("apple"),
+            bulk("banana"),
+            bulk("cherry"),
+        ])
+        .await
+        .unwrap();
+
+        // SSCAN myset 0 -- should return cursor and members
+        let result = sscan.execute(vec![bulk("myset"), bulk("0")]).await.unwrap();
+
+        match &result {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 2);
+                // First element is cursor (BulkString)
+                match &arr[0] {
+                    RespValue::BulkString(Some(_)) => {}
+                    other => panic!("expected BulkString cursor, got {:?}", other),
+                }
+                // Second element is array of members
+                match &arr[1] {
+                    RespValue::Array(Some(members)) => {
+                        assert_eq!(members.len(), 3);
+                    }
+                    other => panic!("expected Array of members, got {:?}", other),
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+
+        // SSCAN on non-existing key returns cursor 0 and empty array
+        let result = sscan.execute(vec![bulk("nokey"), bulk("0")]).await.unwrap();
+        assert_eq!(
+            result,
+            RespValue::Array(Some(vec![
+                RespValue::BulkString(Some(b"0".to_vec())),
+                RespValue::Array(Some(vec![])),
+            ]))
+        );
+    }
+
+    // 17. SINTERCARD with LIMIT
+    #[tokio::test]
+    async fn test_sintercard() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sintercard = SInterCardCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("s1"), bulk("a"), bulk("b"), bulk("c")])
+            .await
+            .unwrap();
+        sadd.execute(vec![bulk("s2"), bulk("b"), bulk("c"), bulk("d")])
+            .await
+            .unwrap();
+
+        // SINTERCARD 2 s1 s2 -- intersection is {b, c}, cardinality = 2
+        let result = sintercard
+            .execute(vec![bulk("2"), bulk("s1"), bulk("s2")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(2));
+
+        // SINTERCARD 2 s1 s2 LIMIT 1 -- limited to 1
+        let result = sintercard
+            .execute(vec![
+                bulk("2"),
+                bulk("s1"),
+                bulk("s2"),
+                bulk("LIMIT"),
+                bulk("1"),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(1));
+
+        // SINTERCARD with disjoint sets
+        sadd.execute(vec![bulk("s3"), bulk("x"), bulk("y")])
+            .await
+            .unwrap();
+        let result = sintercard
+            .execute(vec![bulk("2"), bulk("s1"), bulk("s3")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Integer(0));
+    }
+
+    // 18. SRANDMEMBER with negative count allows duplicates
+    #[tokio::test]
+    async fn test_srandmember_negative_count() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let srandmember = SRandMemberCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a"), bulk("b")])
+            .await
+            .unwrap();
+
+        let result = srandmember
+            .execute(vec![bulk("myset"), bulk("-5")])
+            .await
+            .unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 5); // 5 elements, may have duplicates
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    // 19. SRANDMEMBER on missing key
+    #[tokio::test]
+    async fn test_srandmember_missing_key() {
+        let store = DataStore::new();
+        let srandmember = SRandMemberCommand::new(store.clone());
+
+        // Without count
+        let result = srandmember.execute(vec![bulk("nokey")]).await.unwrap();
+        assert_eq!(result, RespValue::BulkString(None));
+
+        // With count
+        let result = srandmember
+            .execute(vec![bulk("nokey"), bulk("3")])
+            .await
+            .unwrap();
+        assert_eq!(result, RespValue::Array(Some(vec![])));
+    }
+
+    // 20. SSCAN with MATCH pattern
+    #[tokio::test]
+    async fn test_sscan_with_match() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sscan = SScanCommand::new(store.clone());
+
+        sadd.execute(vec![
+            bulk("myset"),
+            bulk("apple"),
+            bulk("banana"),
+            bulk("avocado"),
+        ])
+        .await
+        .unwrap();
+
+        let result = sscan
+            .execute(vec![bulk("myset"), bulk("0"), bulk("MATCH"), bulk("a*")])
+            .await
+            .unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 2);
+                match &arr[1] {
+                    RespValue::Array(Some(members)) => {
+                        // Only apple and avocado match "a*"
+                        assert_eq!(members.len(), 2);
+                    }
+                    other => panic!("expected Array, got {:?}", other),
+                }
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    // 21. SSCAN with COUNT
+    #[tokio::test]
+    async fn test_sscan_with_count() {
+        let store = DataStore::new();
+        let sadd = SAddCommand::new(store.clone());
+        let sscan = SScanCommand::new(store.clone());
+
+        sadd.execute(vec![
+            bulk("myset"),
+            bulk("a"),
+            bulk("b"),
+            bulk("c"),
+            bulk("d"),
+            bulk("e"),
+        ])
+        .await
+        .unwrap();
+
+        // COUNT 2 — should return 2 items and a non-zero cursor
+        let result = sscan
+            .execute(vec![bulk("myset"), bulk("0"), bulk("COUNT"), bulk("2")])
+            .await
+            .unwrap();
+        match &result {
+            RespValue::Array(Some(arr)) => {
+                assert_eq!(arr.len(), 2);
+                match &arr[1] {
+                    RespValue::Array(Some(members)) => {
+                        assert_eq!(members.len(), 2);
+                    }
+                    other => panic!("expected Array, got {:?}", other),
+                }
+                // Cursor should be "2"
+                assert_eq!(arr[0], RespValue::BulkString(Some(b"2".to_vec())));
+            }
+            other => panic!("expected Array, got {:?}", other),
+        }
+    }
+
+    // 22. SINTERCARD wrong args
+    #[tokio::test]
+    async fn test_sintercard_wrong_args() {
+        let store = DataStore::new();
+        let sintercard = SInterCardCommand::new(store.clone());
+
+        // No args
+        let r = sintercard.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        // Non-positive numkeys
+        let r = sintercard.execute(vec![bulk("0")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        // numkeys > available keys
+        let r = sintercard
+            .execute(vec![bulk("3"), bulk("s1")])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        // Non-integer numkeys
+        let r = sintercard
+            .execute(vec![RespValue::Integer(1)])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    // 23. SRANDMEMBER wrong args
+    #[tokio::test]
+    async fn test_srandmember_wrong_args() {
+        let store = DataStore::new();
+        let srandmember = SRandMemberCommand::new(store.clone());
+
+        let r = srandmember.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        let r = srandmember
+            .execute(vec![bulk("k"), bulk("1"), bulk("extra")])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    // 24. SRANDMEMBER non-integer count
+    #[tokio::test]
+    async fn test_srandmember_non_integer_count() {
+        let store = DataStore::new();
+        let srandmember = SRandMemberCommand::new(store.clone());
+        let sadd = SAddCommand::new(store.clone());
+
+        sadd.execute(vec![bulk("myset"), bulk("a")]).await.unwrap();
+
+        let r = srandmember
+            .execute(vec![bulk("myset"), bulk("abc")])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    // 25. SPOP wrong args
+    #[tokio::test]
+    async fn test_spop_wrong_args() {
+        let store = DataStore::new();
+        let spop = SPopCommand::new(store.clone());
+
+        let r = spop.execute(vec![]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        let r = spop
+            .execute(vec![bulk("k"), bulk("1"), bulk("extra")])
+            .await
+            .unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+    }
+
+    // 26. SPOP with count on missing key
+    #[tokio::test]
+    async fn test_spop_count_missing_key() {
+        let store = DataStore::new();
+        let spop = SPopCommand::new(store.clone());
+
+        let r = spop.execute(vec![bulk("nokey"), bulk("2")]).await.unwrap();
+        assert_eq!(r, RespValue::Array(Some(vec![])));
+    }
+
+    // 27. SSCAN wrong args
+    #[tokio::test]
+    async fn test_sscan_wrong_args() {
+        let store = DataStore::new();
+        let sscan = SScanCommand::new(store.clone());
+
+        // Too few args
+        let r = sscan.execute(vec![bulk("k")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
+
+        // Invalid cursor
+        let r = sscan.execute(vec![bulk("k"), bulk("abc")]).await.unwrap();
+        assert!(matches!(r, RespValue::Error(_)));
     }
 }

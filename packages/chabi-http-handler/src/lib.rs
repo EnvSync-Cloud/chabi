@@ -90,3 +90,142 @@ async fn key_exists(
     let store = store.read().await;
     Json(store.contains_key(key.as_bytes()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    fn make_app() -> (SharedStore, Router) {
+        let store: SharedStore = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let app = Router::new()
+            .route("/kv/:key", get(get_value))
+            .route("/kv/:key", post(set_value))
+            .route("/kv/:key", delete(delete_value))
+            .route("/kv/:key/exists", get(key_exists))
+            .with_state(store.clone());
+        (store, app)
+    }
+
+    #[tokio::test]
+    async fn test_set_and_get() {
+        let (_store, app) = make_app();
+
+        // POST to set a value
+        let body = serde_json::json!({"value": "hello"}).to_string();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/kv/mykey")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // GET to retrieve the value
+        let req = Request::builder()
+            .method("GET")
+            .uri("/kv/mykey")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let kv: KeyValue = serde_json::from_slice(&body).unwrap();
+        assert_eq!(kv.value, "hello");
+    }
+
+    #[tokio::test]
+    async fn test_get_missing() {
+        let (_store, app) = make_app();
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/kv/nokey")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_delete() {
+        let (_store, app) = make_app();
+
+        // Set a value first
+        let body = serde_json::json!({"value": "test"}).to_string();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/kv/delkey")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let _ = app.clone().oneshot(req).await.unwrap();
+
+        // Delete it
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/kv/delkey")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Verify it's gone
+        let req = Request::builder()
+            .method("GET")
+            .uri("/kv/delkey")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_key_exists() {
+        let (_store, app) = make_app();
+
+        // Key doesn't exist
+        let req = Request::builder()
+            .method("GET")
+            .uri("/kv/mykey/exists")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"false");
+
+        // Set a value
+        let body = serde_json::json!({"value": "val"}).to_string();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/kv/mykey")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let _ = app.clone().oneshot(req).await.unwrap();
+
+        // Now it exists
+        let req = Request::builder()
+            .method("GET")
+            .uri("/kv/mykey/exists")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"true");
+    }
+
+    #[tokio::test]
+    async fn test_constructor() {
+        let store: SharedStore = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let handler = HttpHandler::new(store, 9999);
+        assert_eq!(handler.port, 9999);
+    }
+}
