@@ -1,0 +1,61 @@
+---
+title: Methodology
+description: Benchmark environment, harness, and command shape for the published Chabi comparison table.
+---
+
+## Harness
+
+Chabi uses the Go-based `apps/membench` harness derived from DiceDB's membench project.
+
+Relevant commands already present in the repository:
+
+- `make bench`
+- `apps/membench/Makefile`
+- GitHub Actions benchmark workflow in `.github/workflows/bench.yml`
+
+## Published Environment
+
+The published benchmark table uses:
+
+- Machine: Hetzner CCX23
+- CPU: 4 vCPU
+- Memory: 16 GB RAM
+
+## Build Mode
+
+- Chabi benchmarked through the Redis-compatible protocol path
+- Redis benchmarked through the same `membench` style workload
+- DiceDB benchmarked in the same comparison set
+
+## Harness
+
+Chabi uses the Go-based `apps/membench` harness derived from DiceDB's membench project.
+
+Relevant repository references:
+
+- `apps/membench`
+- `apps/membench/Makefile`
+- `.github/workflows/bench.yml`
+
+## Command Shape
+
+The benchmark workflow in this repository uses the `membench` benchmark command shape:
+
+```bash
+go run main.go benchmark --database redis --host 127.0.0.1 --port <port> --num-requests <n> --num-clients <n>
+```
+
+## Notes
+
+- The published table compares Chabi, Redis, and DiceDB.
+- The hardware reference for the published numbers is the Hetzner CCX23 machine above.
+- This page documents the benchmark setup used for the published comparison rather than a local workstation run.
+
+Performance will still vary with:
+
+- CPU architecture
+- persistence configuration
+- operating system
+- kernel and socket behavior
+- request count and client count
+- build mode

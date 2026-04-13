@@ -1,0 +1,64 @@
+---
+title: Persistence And Snapshots
+description: How Chabi writes snapshots, restores them on boot, and exposes snapshot inspection over Redis and HTTP.
+---
+
+## Snapshot Storage
+
+Chabi persists snapshots into a single file:
+
+```text
+<SNAPSHOT_PATH>/chabi.kdb
+```
+
+Internally this uses `redb`.
+
+## Startup Restore
+
+When the server starts and a snapshot directory is configured:
+
+1. It points the Redis server at the snapshot directory.
+2. It attempts to load `chabi.kdb` if it already exists.
+3. It starts the background snapshot task using `SNAPSHOT_INTERVAL_SECS`.
+
+If the file does not exist yet, startup continues normally.
+
+## Background Snapshots
+
+The background task periodically:
+
+1. Builds point-in-time snapshots of all non-empty databases.
+2. Persists them into the configured directory.
+
+The interval is controlled by:
+
+- `--snapshot_interval_secs`
+- or `SNAPSHOT_INTERVAL_SECS`
+
+## `SAVE`
+
+`SAVE` is the synchronous persistence path.
+
+It does **not** rely on the lightweight `SaveCommand` in `chabi-core`. The server intercepts `SAVE` in the Redis connection loop and immediately writes the current snapshot set to disk.
+
+Use it when you want an immediate snapshot flush before shutdown or inspection.
+
+## `BGSAVE`
+
+`BGSAVE` currently returns:
+
+```text
+Background saving started
+```
+
+But the command implementation is currently just a status response. Treat the actual periodic snapshot task and `SAVE` as the reliable persistence mechanisms today.
+
+## HTTP Snapshot View
+
+`GET /snapshot` returns the current in-memory snapshot view as JSON.
+
+Important details:
+
+- The response is keyed by database index.
+- DB `0` is always included for backward compatibility, even when empty.
+- This endpoint is useful for debugging and inspection, not for production backup workflows.

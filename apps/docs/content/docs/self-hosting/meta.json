@@ -1,0 +1,7 @@
+{
+  "title": "Self Hosting",
+  "defaultOpen": true,
+  "pages": [
+    "docker-compose"
+  ]
+}

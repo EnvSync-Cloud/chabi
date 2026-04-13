@@ -1,0 +1,74 @@
+---
+title: Quickstart
+description: Build Chabi, start the server, and verify both the Redis and HTTP surfaces.
+---
+
+## Prerequisites
+
+- Rust stable
+- `make`
+- `redis-cli` for the quickest Redis verification
+
+Go is only required if you want to run `membench`.
+
+## Build The Workspace
+
+```bash
+make build
+```
+
+## Start The Server
+
+The current Makefile target is `make dev`.
+
+```bash
+make dev
+```
+
+With explicit ports:
+
+```bash
+REDIS_PORT=6379 HTTP_PORT=8080 make dev
+```
+
+## Verify The Redis Listener
+
+```bash
+redis-cli -p 6379 PING
+redis-cli -p 6379 SET greeting hello
+redis-cli -p 6379 GET greeting
+```
+
+Expected:
+
+- `PING` returns `PONG`
+- `SET` returns `OK`
+- `GET` returns `hello`
+
+## Verify The HTTP Listener
+
+The current HTTP surface is intentionally small:
+
+- `GET /` returns a JSON health payload
+- `GET /metrics` returns Prometheus text
+- `GET /snapshot` returns the in-memory snapshot view
+
+```bash
+curl http://127.0.0.1:8080/
+curl http://127.0.0.1:8080/metrics
+curl http://127.0.0.1:8080/snapshot
+```
+
+## Run The Integration Tester
+
+The test harness starts the server, runs the Rust tester, and shuts the server down:
+
+```bash
+make test
+```
+
+If you already have a running Chabi instance, you can also use the tester binary directly:
+
+```bash
+cargo run -p chabi-tester -- --redis-port 6379 --http-port 8080 --debug
+```

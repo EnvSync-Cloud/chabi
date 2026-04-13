@@ -1,0 +1,55 @@
+---
+title: Feature Matrix
+description: Current capabilities, operational surfaces, and notable limitations in the present implementation.
+---
+
+## Protocol And Runtime
+
+| Capability | Current state | Notes |
+| --- | --- | --- |
+| RESP TCP server | Supported | Primary protocol surface |
+| Redis-compatible command execution | Supported | Coverage is broad but not complete Redis parity |
+| Multiple logical DBs | Supported | `SELECT` with `NUM_DBS = 16` |
+| Transactions | Supported | `MULTI`, `EXEC`, `DISCARD`; `WATCH` is accepted as a stub |
+| Pattern subscriptions | Supported | `PSUBSCRIBE` and `PUNSUBSCRIBE` are handled in the connection loop |
+
+## Data Structures
+
+| Type | Current state | Notes |
+| --- | --- | --- |
+| Strings | Supported | Includes range and multi-key operations |
+| Lists | Supported | Includes insert, trim, move, and positional lookups |
+| Sets | Supported | Includes store variants and scans |
+| Hashes | Supported | Includes increment, scan, and random field behavior |
+| Sorted sets | Supported | Includes rank, range, union/intersection store, scan |
+| Bitmaps | Supported | `SETBIT`, `GETBIT`, `BITCOUNT`, `BITPOS` |
+| HyperLogLog | Supported | Present, but implementation is a simplified exact-count stub in code comments |
+
+## Persistence And Operations
+
+| Capability | Current state | Notes |
+| --- | --- | --- |
+| Snapshot restore on boot | Supported | Loads `chabi.kdb` when present |
+| Periodic background snapshots | Supported | Driven by `SNAPSHOT_INTERVAL_SECS` |
+| `SAVE` | Supported | Intercepted in the server loop and persisted synchronously |
+| `BGSAVE` | Partial | Returns success text but is not the main persistence path |
+| HTTP health endpoint | Supported | `GET /` |
+| HTTP metrics endpoint | Supported | `GET /metrics` |
+| HTTP snapshot endpoint | Supported | `GET /snapshot` |
+| Prometheus text output | Supported | Includes connection, command, key, expiration, pubsub metrics |
+
+## Known Limitations
+
+| Area | Current state | Notes |
+| --- | --- | --- |
+| `CONFIG GET` | Partial | Returns an empty array |
+| `COMMAND` metadata | Partial | Limited behavior, not a full Redis command description |
+| `DOCS` command | Not exposed | Implemented in `chabi-core`, not registered by the server |
+| HTTP key-value API | Not present | Older README prose is stale here |
+| HLL accuracy model | Simplified | Code comments describe it as a stub using exact counting |
+
+## Guidance
+
+For development and self-hosting, Chabi is already useful as a Redis-compatible server with persistence and metrics.
+
+For strict Redis parity, treat the current implementation as an actively evolving subset and verify command-specific behavior against the code or integration tests before depending on edge-case semantics.

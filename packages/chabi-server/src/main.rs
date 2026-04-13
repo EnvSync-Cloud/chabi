@@ -130,9 +130,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_parse_bind_host_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // Clear BIND_HOST to get the default
         env::remove_var("BIND_HOST");
         let result = parse_bind_host();
@@ -141,6 +145,7 @@ mod tests {
 
     #[test]
     fn test_parse_bind_host_custom() {
+        let _guard = ENV_LOCK.lock().unwrap();
         env::set_var("BIND_HOST", "0.0.0.0");
         let result = parse_bind_host();
         assert_eq!(result, [0, 0, 0, 0]);
@@ -149,6 +154,7 @@ mod tests {
 
     #[test]
     fn test_parse_bind_host_invalid() {
+        let _guard = ENV_LOCK.lock().unwrap();
         env::set_var("BIND_HOST", "not-an-ip");
         let result = parse_bind_host();
         assert_eq!(result, [127, 0, 0, 1]); // fallback
@@ -157,6 +163,7 @@ mod tests {
 
     #[test]
     fn test_parse_bind_host_partial() {
+        let _guard = ENV_LOCK.lock().unwrap();
         env::set_var("BIND_HOST", "192.168.1");
         let result = parse_bind_host();
         assert_eq!(result, [127, 0, 0, 1]); // fallback - only 3 parts
