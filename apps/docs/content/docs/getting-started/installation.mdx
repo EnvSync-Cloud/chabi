@@ -1,0 +1,65 @@
+---
+title: Installation
+description: Install Chabi from source, release artifacts, or the published container image.
+---
+
+## Source Build
+
+Clone the repository and build the workspace:
+
+```bash
+git clone git@github.com:EnvSync-Cloud/chabi.git
+cd chabi
+make build
+```
+
+For a release binary from source:
+
+```bash
+cargo build -p chabi-server --release
+./target/release/chabi-server
+```
+
+## Release Artifacts
+
+The repository publishes release tarballs for tagged builds:
+
+- Linux amd64
+- Linux arm64
+- macOS amd64
+- macOS arm64
+
+See the [GitHub releases page](https://github.com/EnvSync-Cloud/chabi/releases) for the current tagged assets.
+
+## Container Image
+
+Chabi also publishes a GHCR image:
+
+```text
+ghcr.io/envsync-cloud/chabi:latest
+```
+
+Run it directly:
+
+```bash
+docker run --rm \
+  -p 6379:6379 \
+  -p 8080:8080 \
+  -e BIND_HOST=0.0.0.0 \
+  -e REDIS_PORT=6379 \
+  -e HTTP_PORT=8080 \
+  -e SNAPSHOT_PATH=/data \
+  -e SNAPSHOT_INTERVAL_SECS=60 \
+  -v "$(pwd)/data:/data" \
+  ghcr.io/envsync-cloud/chabi:latest
+```
+
+## Install Verification
+
+Use the same checks regardless of install path:
+
+```bash
+redis-cli -p 6379 PING
+curl http://127.0.0.1:8080/
+curl http://127.0.0.1:8080/metrics
+```

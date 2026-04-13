@@ -1,0 +1,83 @@
+---
+title: Architecture
+description: Repository layout and the current responsibility split across Chabi packages and apps.
+---
+
+## Workspace Layout
+
+### Rust Packages
+
+- `packages/chabi-core`
+  Contains RESP types, command implementations, storage types, and shared primitives.
+
+- `packages/chabi-server`
+  The main runtime. It wires the command registry, Redis TCP server, HTTP server, metrics, and snapshot persistence.
+
+- `packages/chabi-redis-handler`
+  Experimental reusable RESP server components.
+
+- `packages/chabi-http-handler`
+  Experimental reusable HTTP handler components.
+
+### Rust Apps
+
+- `apps/chabi-tester`
+  End-to-end integration tests across Redis and HTTP.
+
+- `apps/membench`
+  Go benchmark harness used for local and CI performance measurements.
+
+### Docs App
+
+- `apps/docs`
+  Static Next.js + Fumadocs site for Chabi documentation.
+
+## Runtime Shape
+
+At startup, `packages/chabi-server/src/main.rs`:
+
+1. Parses CLI flags.
+2. Resolves environment-driven ports and snapshot settings.
+3. Creates a snapshot directory if one was not explicitly provided.
+4. Starts the Redis TCP server and HTTP server concurrently.
+
+## Redis Server Design
+
+The Redis server:
+
+- Keeps `16` logical databases.
+- Builds one command registry per database.
+- Tracks connection counts and total command counters for metrics.
+- Handles some commands through special dispatch logic rather than the per-db registry.
+
+That special path is where `SELECT`, `FLUSHALL`, transaction commands, pattern subscriptions, and `SAVE` live.
+
+## HTTP Server Design
+
+The HTTP server is intentionally direct and minimal:
+
+- `GET /` health response
+- `GET /metrics` Prometheus text
+- `GET /snapshot` JSON representation of the current snapshot state
+
+It is not currently a second client API for reading and writing arbitrary keys.
+
+## Persistence Design
+
+Chabi builds point-in-time snapshots from the in-memory stores, serializes them into `redb`, and restores them on boot.
+
+Snapshot coverage includes:
+
+- strings
+- lists
+- sets
+- hashes
+- sorted sets
+- HyperLogLog
+- expirations
+
+The file path is always:
+
+```text
+<snapshot_dir>/chabi.kdb
+```

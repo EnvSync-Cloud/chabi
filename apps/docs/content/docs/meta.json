@@ -1,0 +1,13 @@
+{
+  "title": "Chabi Docs",
+  "root": true,
+  "pages": [
+    "index",
+    "getting-started",
+    "self-hosting",
+    "operations",
+    "benchmarks",
+    "reference",
+    "development"
+  ]
+}

@@ -1,0 +1,72 @@
+---
+title: Configuration
+description: Runtime environment variables and CLI flags exposed by the current server entrypoint.
+---
+
+## Environment Variables
+
+### `REDIS_PORT`
+
+- Default: `6379`
+- Controls the RESP TCP listener port
+
+### `HTTP_PORT`
+
+- Default: `8080`
+- Controls the HTTP listener port
+
+### `BIND_HOST`
+
+- Default: `127.0.0.1`
+- Parsed as an IPv4 address
+- Invalid values fall back to `127.0.0.1`
+
+For containers, set this to `0.0.0.0`.
+
+### `SNAPSHOT_PATH`
+
+- Optional in configuration
+- If omitted, the server creates an OS temp directory named like `chabi-<timestamp>`
+- Snapshot persistence is therefore effectively enabled by default unless temp directory creation fails
+
+### `SNAPSHOT_INTERVAL_SECS`
+
+- Default: `60`
+- Used when `--snapshot-interval-secs` is left at its default value
+
+## CLI Flags
+
+The current binary exposes:
+
+```bash
+chabi-server --help
+```
+
+Important flags:
+
+- `--debug`
+- `--snapshot_path <PATH>`
+- `--snapshot_interval_secs <SECONDS>`
+
+CLI args override environment variables for snapshot configuration.
+
+## Typical Local Run
+
+```bash
+REDIS_PORT=6379 \
+HTTP_PORT=8080 \
+BIND_HOST=127.0.0.1 \
+SNAPSHOT_PATH=./data \
+SNAPSHOT_INTERVAL_SECS=60 \
+cargo run -p chabi-server -- --debug
+```
+
+## Typical Container Run
+
+```bash
+BIND_HOST=0.0.0.0
+REDIS_PORT=6379
+HTTP_PORT=8080
+SNAPSHOT_PATH=/data
+SNAPSHOT_INTERVAL_SECS=60
+```

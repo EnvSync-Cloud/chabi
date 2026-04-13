@@ -1,0 +1,48 @@
+---
+title: What Is Chabi?
+description: Chabi is a Rust Redis-compatible server with snapshot persistence, a minimal HTTP operational surface, and broad command coverage.
+---
+
+Chabi is a Rust-based Redis-compatible server that prioritizes correctness, async safety, and a small operational surface you can understand from the codebase.
+
+The current runtime combines:
+
+- A RESP TCP server for Redis-style commands.
+- A minimal HTTP listener for health, metrics, and snapshot inspection.
+- Snapshot persistence backed by `redb`.
+- A Rust integration tester plus a Go-based membench harness.
+
+## Current Scope
+
+Chabi already covers more than the top-level `README.md` used to advertise.
+
+As of this docs release, the server exposes:
+
+- Strings, keys, lists, sets, hashes, sorted sets, bitmaps, and HyperLogLog.
+- Multi-database selection with `SELECT`.
+- Transactions with `MULTI`, `EXEC`, and `DISCARD`.
+- Pub/Sub plus pattern subscriptions.
+- Snapshot save and restore behavior.
+- Prometheus-style metrics from `/metrics`.
+
+## What This Site Uses As Source Of Truth
+
+This documentation is based on the current implementation, especially:
+
+- `packages/chabi-server/src/server/redis.rs` for command registration and special dispatch behavior.
+- `packages/chabi-server/src/main.rs` for environment variables and CLI flags.
+- `packages/chabi-server/src/server/http.rs` for the HTTP surface.
+- `packages/chabi-server/src/server/redis.rs` metrics generation for Prometheus names.
+
+That means this site intentionally does **not** copy the older README feature list forward when the code has already moved past it.
+
+## Important Caveats
+
+Chabi is still an early project. A few server-facing commands are intentionally partial or stubbed:
+
+- `CONFIG` accepts some subcommands but `CONFIG GET` returns an empty array.
+- `COMMAND` supports limited behavior and does not expose a full Redis-style registry description.
+- `BGSAVE` currently reports success text, but the fully synchronous persistence path is `SAVE`.
+- The `DOCS` command implementation exists in `chabi-core`, but it is not currently registered by the server.
+
+Use the [feature matrix](./reference/feature-matrix) for the current behavior that matters in practice.

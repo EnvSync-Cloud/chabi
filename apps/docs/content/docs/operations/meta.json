@@ -1,0 +1,9 @@
+{
+  "title": "Operations",
+  "defaultOpen": true,
+  "pages": [
+    "configuration",
+    "persistence-and-snapshots",
+    "http-and-metrics"
+  ]
+}

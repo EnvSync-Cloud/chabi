@@ -1,0 +1,53 @@
+---
+title: HTTP And Metrics
+description: The current HTTP endpoints and Prometheus metrics exposed by Chabi.
+---
+
+## HTTP Endpoints
+
+Chabi currently exposes three meaningful HTTP paths.
+
+### `GET /`
+
+Returns a simple health response:
+
+```json
+{"status": "ok"}
+```
+
+### `GET /metrics`
+
+Returns Prometheus text format from the Redis server state.
+
+### `GET /snapshot`
+
+Returns the current snapshot representation as JSON keyed by database index.
+
+## Metrics
+
+The current Prometheus payload includes:
+
+- `chabi_connected_clients`
+- `chabi_total_connections_served`
+- `chabi_total_commands_processed`
+- `chabi_keys{type="string"}`
+- `chabi_keys{type="list"}`
+- `chabi_keys{type="set"}`
+- `chabi_keys{type="hash"}`
+- `chabi_keys{type="zset"}`
+- `chabi_expiring_keys`
+- `chabi_pubsub_channels`
+
+## Example Calls
+
+```bash
+curl http://127.0.0.1:8080/
+curl http://127.0.0.1:8080/metrics
+curl http://127.0.0.1:8080/snapshot | jq
+```
+
+## What Is Not Exposed Over HTTP
+
+The current HTTP server does **not** expose a key-value write API.
+
+Older prose in the repository still refers to minimal HTTP key-value endpoints, but the implementation in `packages/chabi-server/src/server/http.rs` currently provides health, metrics, and snapshot inspection only.

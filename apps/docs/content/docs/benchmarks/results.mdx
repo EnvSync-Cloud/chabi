@@ -1,0 +1,27 @@
+---
+title: Results
+description: Published benchmark comparison for Chabi, Redis, and DiceDB on a Hetzner CCX23 machine.
+---
+
+## Published Benchmark
+
+- Machine: Hetzner CCX23
+- CPU: 4 vCPU
+- Memory: 16 GB RAM
+- Compared systems: DiceDB, Redis, Chabi
+
+## Result Table
+
+| Metric | Chabi | Redis | DiceDB |
+| --- | ---: | ---: | ---: |
+| Throughput (ops/sec) | 35633 | 12267 | 15655 |
+| GET p50 (ms) | 0.071167 | 0.270335 | 0.227327 |
+| GET p90 (ms) | 0.108543 | 0.329727 | 0.337919 |
+| SET p50 (ms) | 0.072703 | 0.272383 | 0.230399 |
+| SET p90 (ms) | 0.111103 | 0.331775 | 0.339967 |
+
+## Read This As
+
+- A published comparison on a Hetzner CCX23 machine
+- A quick reference for relative throughput and latency between the three systems
+- A benchmark summary that should still be revalidated on your own target hardware before making production decisions

@@ -1,0 +1,193 @@
+---
+title: Supported Commands
+description: Commands currently exposed by the server, grouped by capability and based on the actual registry plus special dispatch behavior.
+---
+
+## Source Of Truth
+
+This page is derived from:
+
+- The command registry in `packages/chabi-server/src/server/redis.rs`
+- Special command handling in the Redis connection loop
+
+## Connection
+
+- `PING`
+- `ECHO`
+- `QUIT`
+- `RESET`
+- `AUTH`
+- `CLIENT`
+- `HELLO`
+
+## Strings
+
+- `SET`
+- `GET`
+- `DEL`
+- `EXISTS`
+- `APPEND`
+- `STRLEN`
+- `INCR`
+- `DECR`
+- `INCRBY`
+- `DECRBY`
+- `INCRBYFLOAT`
+- `MGET`
+- `MSET`
+- `MSETNX`
+- `SETNX`
+- `SETEX`
+- `PSETEX`
+- `GETRANGE`
+- `SETRANGE`
+- `GETDEL`
+- `GETEX`
+
+## Keys
+
+- `KEYS`
+- `TTL`
+- `PTTL`
+- `EXPIRE`
+- `PEXPIRE`
+- `EXPIREAT`
+- `PEXPIREAT`
+- `RENAME`
+- `RENAMENX`
+- `TYPE`
+- `PERSIST`
+- `UNLINK`
+- `RANDOMKEY`
+- `SCAN`
+- `COPY`
+- `TOUCH`
+- `OBJECT`
+
+## Lists
+
+- `LPUSH`
+- `RPUSH`
+- `LPOP`
+- `RPOP`
+- `LRANGE`
+- `LLEN`
+- `LINDEX`
+- `LSET`
+- `LTRIM`
+- `LINSERT`
+- `LREM`
+- `LPOS`
+- `LPUSHX`
+- `RPUSHX`
+- `LMOVE`
+
+## Sets
+
+- `SADD`
+- `SMEMBERS`
+- `SISMEMBER`
+- `SCARD`
+- `SREM`
+- `SPOP`
+- `SRANDMEMBER`
+- `SMOVE`
+- `SINTER`
+- `SUNION`
+- `SDIFF`
+- `SINTERSTORE`
+- `SUNIONSTORE`
+- `SDIFFSTORE`
+- `SSCAN`
+- `SMISMEMBER`
+- `SINTERCARD`
+
+## Hashes
+
+- `HSET`
+- `HMSET` aliasing `HSET`
+- `HGET`
+- `HGETALL`
+- `HEXISTS`
+- `HDEL`
+- `HLEN`
+- `HKEYS`
+- `HVALS`
+- `HMGET`
+- `HINCRBY`
+- `HINCRBYFLOAT`
+- `HSETNX`
+- `HSTRLEN`
+- `HSCAN`
+- `HRANDFIELD`
+
+## Sorted Sets
+
+- `ZADD`
+- `ZREM`
+- `ZSCORE`
+- `ZCARD`
+- `ZCOUNT`
+- `ZRANGE`
+- `ZREVRANGE`
+- `ZRANGEBYSCORE`
+- `ZREVRANGEBYSCORE`
+- `ZRANK`
+- `ZREVRANK`
+- `ZINCRBY`
+- `ZPOPMIN`
+- `ZPOPMAX`
+- `ZRANDMEMBER`
+- `ZMSCORE`
+- `ZUNIONSTORE`
+- `ZINTERSTORE`
+- `ZSCAN`
+
+## Bitmaps
+
+- `SETBIT`
+- `GETBIT`
+- `BITCOUNT`
+- `BITPOS`
+
+## HyperLogLog
+
+- `PFADD`
+- `PFCOUNT`
+- `PFMERGE`
+
+## Server
+
+- `INFO`
+- `SAVE`
+- `DBSIZE`
+- `FLUSHDB`
+- `CONFIG`
+- `COMMAND`
+- `TIME`
+- `BGSAVE`
+
+## Pub/Sub
+
+- `PUBLISH`
+- `SUBSCRIBE`
+- `UNSUBSCRIBE`
+- `PUBSUB`
+- `PSUBSCRIBE`
+- `PUNSUBSCRIBE`
+
+## Transactions And Multi-DB
+
+These are handled specially in the connection loop rather than the per-db command registry:
+
+- `SELECT`
+- `FLUSHALL`
+- `MULTI`
+- `EXEC`
+- `DISCARD`
+- `WATCH`
+- `UNWATCH`
+
+## Known Omissions
+
+The codebase contains a `DOCS` command module, but the server does not currently register it. Do not rely on `DOCS` being available over the network until the registry includes it.
