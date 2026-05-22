@@ -13,11 +13,11 @@ services:
     image: ghcr.io/envsync-cloud/chabi:latest
     ports:
       - "6379:6379"
-      - "8080:8080"
+      - "8008:8008"
     environment:
       BIND_HOST: 0.0.0.0
       REDIS_PORT: 6379
-      HTTP_PORT: 8080
+      HTTP_PORT: 8008
       SNAPSHOT_PATH: /data
       SNAPSHOT_INTERVAL_SECS: 60
     volumes:
@@ -49,9 +49,9 @@ redis-cli -p 6379 PING
 Verify the HTTP listener:
 
 ```bash
-curl http://127.0.0.1:8080/
-curl http://127.0.0.1:8080/metrics
-curl http://127.0.0.1:8080/snapshot
+curl http://127.0.0.1:8008/
+curl http://127.0.0.1:8008/metrics
+curl http://127.0.0.1:8008/snapshot
 ```
 
 Expected behaviors:
@@ -65,4 +65,4 @@ Expected behaviors:
 
 - On startup, Chabi attempts to restore an existing `chabi.kdb` from `SNAPSHOT_PATH`.
 - `SAVE` triggers a synchronous snapshot write.
-- If you change published ports, keep the container-side ports at `6379` and `8080` unless you also change the environment variables.
+- If you change published ports, keep the container-side ports at `6379` and `8008` unless you also change the environment variables.

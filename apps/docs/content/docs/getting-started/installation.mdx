@@ -44,10 +44,10 @@ Run it directly:
 ```bash
 docker run --rm \
   -p 6379:6379 \
-  -p 8080:8080 \
+  -p 8008:8008 \
   -e BIND_HOST=0.0.0.0 \
   -e REDIS_PORT=6379 \
-  -e HTTP_PORT=8080 \
+  -e HTTP_PORT=8008 \
   -e SNAPSHOT_PATH=/data \
   -e SNAPSHOT_INTERVAL_SECS=60 \
   -v "$(pwd)/data:/data" \
@@ -60,6 +60,6 @@ Use the same checks regardless of install path:
 
 ```bash
 redis-cli -p 6379 PING
-curl http://127.0.0.1:8080/
-curl http://127.0.0.1:8080/metrics
+curl http://127.0.0.1:8008/
+curl http://127.0.0.1:8008/metrics
 ```

@@ -28,7 +28,7 @@ make dev
 With explicit ports:
 
 ```bash
-REDIS_PORT=6379 HTTP_PORT=8080 make dev
+REDIS_PORT=6379 HTTP_PORT=8008 make dev
 ```
 
 ## Verify The Redis Listener
@@ -54,9 +54,9 @@ The current HTTP surface is intentionally small:
 - `GET /snapshot` returns the in-memory snapshot view
 
 ```bash
-curl http://127.0.0.1:8080/
-curl http://127.0.0.1:8080/metrics
-curl http://127.0.0.1:8080/snapshot
+curl http://127.0.0.1:8008/
+curl http://127.0.0.1:8008/metrics
+curl http://127.0.0.1:8008/snapshot
 ```
 
 ## Run The Integration Tester
@@ -70,5 +70,5 @@ make test
 If you already have a running Chabi instance, you can also use the tester binary directly:
 
 ```bash
-cargo run -p chabi-tester -- --redis-port 6379 --http-port 8080 --debug
+cargo run -p chabi-tester -- --redis-port 6379 --http-port 8008 --debug
 ```

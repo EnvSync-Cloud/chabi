@@ -12,7 +12,7 @@ description: Runtime environment variables and CLI flags exposed by the current 
 
 ### `HTTP_PORT`
 
-- Default: `8080`
+- Default: `8008`
 - Controls the HTTP listener port
 
 ### `BIND_HOST`
@@ -54,7 +54,7 @@ CLI args override environment variables for snapshot configuration.
 
 ```bash
 REDIS_PORT=6379 \
-HTTP_PORT=8080 \
+HTTP_PORT=8008 \
 BIND_HOST=127.0.0.1 \
 SNAPSHOT_PATH=./data \
 SNAPSHOT_INTERVAL_SECS=60 \
@@ -66,7 +66,7 @@ cargo run -p chabi-server -- --debug
 ```bash
 BIND_HOST=0.0.0.0
 REDIS_PORT=6379
-HTTP_PORT=8080
+HTTP_PORT=8008
 SNAPSHOT_PATH=/data
 SNAPSHOT_INTERVAL_SECS=60
 ```
