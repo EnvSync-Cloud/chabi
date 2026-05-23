@@ -584,7 +584,7 @@ impl CommandHandler for LRemCommand {
                         }
                     }
                 } else if count < 0 {
-                    let target = (-count) as i64;
+                    let target = -count;
                     let mut i = list.len();
                     while i > 0 && removed < target {
                         i -= 1;
