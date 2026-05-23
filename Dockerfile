@@ -41,12 +41,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=builder /app/target/release/chabi-server /usr/local/bin/chabi-server
 
 ENV REDIS_PORT=6379
-ENV HTTP_PORT=8080
+ENV HTTP_PORT=8008
 ENV BIND_HOST=0.0.0.0
 ENV SNAPSHOT_PATH=/data
 
 RUN mkdir -p /data
 
-EXPOSE 6379 8080
+EXPOSE 6379 8008
 
 ENTRYPOINT ["chabi-server"]

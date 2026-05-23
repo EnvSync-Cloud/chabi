@@ -21,7 +21,7 @@ struct Args {
     http_host: String,
 
     /// HTTP server port
-    #[arg(long, default_value = "8080")]
+    #[arg(long, default_value = "8008")]
     http_port: u16,
 
     /// Enable debug logging

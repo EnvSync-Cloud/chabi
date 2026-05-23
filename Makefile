@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 # Default ports (can be overridden)
 REDIS_PORT ?= 6379
-HTTP_PORT ?= 8080
+HTTP_PORT ?= 8008
 
 all: build
 
@@ -82,4 +82,4 @@ help:
 	echo; \
 	echo "Variables:"; \
 	echo "  REDIS_PORT     - Redis port (default 6379)"; \
-	echo "  HTTP_PORT      - HTTP port (default 8080)";
+	echo "  HTTP_PORT      - HTTP port (default 8008)";
